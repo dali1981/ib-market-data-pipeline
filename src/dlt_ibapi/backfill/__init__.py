@@ -7,6 +7,10 @@ from .config import (
     OptionChainSnapshotConfig,
     ContractSelectionMode,
 )
+from .resources import (
+    snapshot_option_chain,
+    option_chain_snapshots_source,
+)
 
 __all__ = [
     "missing_windows",
@@ -15,4 +19,6 @@ __all__ = [
     "OptionBackfillConfig",
     "OptionChainSnapshotConfig",
     "ContractSelectionMode",
+    "snapshot_option_chain",
+    "option_chain_snapshots_source",
 ]

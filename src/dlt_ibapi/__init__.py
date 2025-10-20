@@ -12,13 +12,21 @@ from .sources import (
     ib_contract_details,
     ib_source,
 )
+from .backfill import (
+    snapshot_option_chain,
+    option_chain_snapshots_source,
+)
 
 __version__ = "0.1.0"
 
 __all__ = [
+    # Basic resources
     "ib_source",
     "ib_historical_bars",
     "ib_market_data_snapshot",
     "ib_option_chain",
     "ib_contract_details",
+    # Backfill resources
+    "snapshot_option_chain",
+    "option_chain_snapshots_source",
 ]
