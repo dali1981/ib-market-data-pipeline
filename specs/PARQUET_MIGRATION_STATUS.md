@@ -1,7 +1,7 @@
 # Parquet Migration - Implementation Status
 
-**Last Updated**: 2025-10-20 21:00
-**Overall Progress**: 35%
+**Last Updated**: 2025-10-20 21:30
+**Overall Progress**: 50%
 
 ---
 
@@ -11,12 +11,12 @@
 |-------|--------|----------|------------|--------------|
 | Phase 1: DLT Config | ✅ Complete | 100% | 1-2 | 1.2 |
 | Phase 2: Hybrid Readers | ✅ Complete | 100% | 3-4 | 2.5 |
-| Phase 3: Resource Updates | ⚪ Not Started | 0% | 2-3 | - |
+| Phase 3: Resource Updates | ✅ Complete | 100% | 2-3 | 0.5 |
 | Phase 4: Examples/CLI | ⚪ Not Started | 0% | 1-2 | - |
 | Phase 5: Tests | ⚪ Not Started | 0% | 2-3 | - |
 | Phase 6: Documentation | ⚪ Not Started | 0% | 1 | - |
 | Phase 7: Final Config | ⚪ Not Started | 0% | 0.5 | - |
-| **TOTAL** | 🟡 **In Progress** | **35%** | **11-16** | **3.7** |
+| **TOTAL** | 🟡 **In Progress** | **50%** | **11-16** | **4.2** |
 
 **Legend**: ✅ Complete | 🟡 In Progress | ⚪ Not Started
 
@@ -104,29 +104,54 @@
 
 ---
 
-### Phase 3: Update DLT Resources for Partitioning ⚪
+### Phase 3: Update DLT Resources for Partitioning ✅
 
-**Status**: Not Started
-**Estimated Start**: TBD
+**Status**: Complete (100% complete)
+**Started**: 2025-10-20
+**Completed**: 2025-10-20
 
-#### Tasks
-- [ ] Update `snapshot_option_chain` resource
-  - [ ] Add `date` column extraction
-  - [ ] Add partition hints to decorator
-  - [ ] Flatten nested arrays (expirations, strikes)
+#### Completed Tasks ✅
+- [x] Updated `normalize_bar_data()` in `transformers.py`
+  - [x] Added `date` column extraction from timestamp
+  - [x] Added `time` field for primary key
+  - [x] Handles datetime strings and objects
+  - [x] Backward compatible with `timestamp` field
 
-- [ ] Update `backfill_equity_bars` resource
-  - [ ] Add `date` column extraction
-  - [ ] Add partition hints to decorator
-  - [ ] Ensure `symbol` is uppercase
+- [x] Updated `snapshot_option_chain` resource
+  - [x] Added `date` column (snapshot_date.isoformat())
+  - [x] Added partition hints: `date` and `underlying`
+  - [x] Arrays (expirations/strikes) handled by DLT normalization
 
-- [ ] Update `backfill_option_bars` resource
-  - [ ] Add `date` column extraction
-  - [ ] Add partition hints to decorator
-  - [ ] Ensure `symbol` is uppercase
+- [x] Updated `backfill_equity_bars` resource
+  - [x] Date automatically added via normalize_bar_data()
+  - [x] Added partition hints: `date` and `symbol`
+  - [x] Symbol already uppercased in resource
 
-**Files to Modify**:
-- `src/dlt_ibapi/backfill/resources.py` (~150 line changes)
+- [x] Updated `backfill_option_bars` resource
+  - [x] Date automatically added via normalize_bar_data()
+  - [x] Added partition hints: `date` and `symbol`
+  - [x] Underlying already uppercased in resource
+
+**Partition Layout**:
+```
+data/
+├── stocks/
+│   └── equity_bars_backfill/
+│       └── date=2025-10-20/
+│           ├── symbol=AAPL/*.parquet
+│           └── symbol=MSFT/*.parquet
+└── options/
+    ├── option_bars_backfill/
+    │   └── date=2025-10-20/
+    │       └── symbol=AAPL/*.parquet
+    └── option_chain_snapshot/
+        └── date=2025-10-20/
+            └── underlying=AAPL/*.parquet
+```
+
+**Files Modified**:
+- `src/dlt_ibapi/transformers.py` (~30 line changes)
+- `src/dlt_ibapi/backfill/resources.py` (~10 line changes)
 
 ---
 
@@ -255,6 +280,19 @@ None yet
 ---
 
 ## Notes & Decisions
+
+### 2025-10-20 21:30: Phase 3 Complete - DLT Resources for Partitioning
+- Updated `normalize_bar_data()` to extract date from timestamp for partitioning
+  - Added `time` field (full datetime for primary key)
+  - Added `date` field (ISO date string for Hive partitioning)
+  - Maintains backward compatibility with `timestamp` field
+- Added partition column hints to all 3 DLT resources:
+  - `snapshot_option_chain`: date + underlying partitions
+  - `backfill_equity_bars`: date + symbol partitions
+  - `backfill_option_bars`: date + symbol partitions
+- DLT will automatically create Hive-style directory structure
+- Phase 3: 100% complete (0.5 hours)
+- Overall progress: 50%
 
 ### 2025-10-20 21:00: Phase 2 Complete - Hybrid Parquet Readers
 - Created `ParquetReaderBase` with intelligent query routing:
