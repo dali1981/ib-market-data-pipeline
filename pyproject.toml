@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "DLT connector for Interactive Brokers - ingest market data via IB Gateway/TWS into data pipelines"
 requires-python = ">=3.10"
 dependencies = [
-    "dlt[duckdb]>=0.4.0",
+    "dlt[filesystem,parquet,duckdb]>=0.4.0",  # Added filesystem and parquet extras
     "ib-connector>=0.1.0",
     "omegaconf>=2.3.0",
+    "pandas>=2.3.3",
+    "pyarrow>=21.0.0",
     "pydantic>=2.0.0",
     "rich>=14.2.0",
     "scipy>=1.15.3",
@@ -29,6 +31,11 @@ ib-connector = { path = "../ib-connector", editable = true }
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dlt_ibapi"]

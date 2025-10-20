@@ -1,0 +1,29 @@
+# DLT Configuration for dlt-ibapi
+# This configures DLT to store market data in Parquet files
+
+[pipeline]
+# Use Parquet format for all data loads
+loader_file_format = "parquet"
+
+[destination.filesystem]
+# Local filesystem destination
+# Market data will be stored in ./data directory
+bucket_url = "data"
+
+# Layout template for organizing Parquet files
+# Partitioning by table_name, date, and symbol for efficient queries
+layout = "{table_name}/date={date}/symbol={symbol}"
+
+[destination.filesystem.credentials]
+# No credentials needed for local filesystem
+# For cloud storage (S3/GCS/Azure), add credentials here
+
+[normalize]
+# DLT normalization settings
+json_module = "simplejson"
+
+# Store DLT metadata in separate location
+# This keeps pipeline state separate from market data
+[destination.duckdb]
+# Small DuckDB file for DLT metadata only
+credentials = ".dlt-ibapi/pipeline_metadata.duckdb"
