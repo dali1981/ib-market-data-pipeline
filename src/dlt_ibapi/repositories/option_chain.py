@@ -2,6 +2,7 @@
 Option chain snapshot reader for querying option chain data from DLT.
 
 Queries data written by snapshot_option_chain DLT resource.
+Now supports Parquet files using DuckDB for all queries (snapshots are small).
 
 Schema: underlying, underlying_conid, exchange, trading_class,
         multiplier, expirations (array), strikes (array),
@@ -13,10 +14,10 @@ from typing import List, Optional, Set
 
 import pandas as pd
 
-from .base import BaseReader
+from .parquet_reader import ParquetReaderBase
 
 
-class OptionChainSnapshotReader(BaseReader):
+class OptionChainSnapshotReader(ParquetReaderBase):
     """
     Reader for option chain snapshot data written by DLT.
 
@@ -29,6 +30,10 @@ class OptionChainSnapshotReader(BaseReader):
     def _get_table_name(self) -> str:
         """Table name for option chain snapshots."""
         return "option_chain_snapshot"
+
+    def _should_use_duckdb(self, query_type: str) -> bool:
+        """Always use DuckDB for option chain snapshots (small datasets)."""
+        return True  # Snapshots are small, always use DuckDB
 
     def get_available_expirations(
         self,
@@ -52,8 +57,7 @@ class OptionChainSnapshotReader(BaseReader):
             List of expiration dates sorted ascending
         """
         table_name = self._get_table_name()
-        full_table = f"{self.dataset_name}.{table_name}"
-        exp_table = f"{self.dataset_name}.{table_name}__expirations"
+        exp_table = f"{table_name}__expirations"
 
         where_clauses = [
             "p.underlying = $underlying",
@@ -70,12 +74,12 @@ class OptionChainSnapshotReader(BaseReader):
         # Join with child table for expirations
         query = f"""
             SELECT DISTINCT e.value as exp_str
-            FROM {full_table} p
+            FROM {table_name} p
             JOIN {exp_table} e ON p._dlt_id = e._dlt_parent_id
             WHERE {where_sql}
         """
 
-        df = self._execute_query(query, params)
+        df = self._query_with_duckdb(query, params)
 
         if df.empty:
             return []
@@ -121,8 +125,7 @@ class OptionChainSnapshotReader(BaseReader):
             List of strike prices sorted ascending
         """
         table_name = self._get_table_name()
-        full_table = f"{self.dataset_name}.{table_name}"
-        strike_table = f"{self.dataset_name}.{table_name}__strikes"
+        strike_table = f"{table_name}__strikes"
 
         where_clauses = [
             "p.underlying = $underlying",
@@ -139,13 +142,13 @@ class OptionChainSnapshotReader(BaseReader):
         # Join with child table for strikes
         query = f"""
             SELECT DISTINCT s.value as strike
-            FROM {full_table} p
+            FROM {table_name} p
             JOIN {strike_table} s ON p._dlt_id = s._dlt_parent_id
             WHERE {where_sql}
             ORDER BY strike
         """
 
-        df = self._execute_query(query, params)
+        df = self._query_with_duckdb(query, params)
         return df["strike"].tolist() if not df.empty else []
 
     def get_chain_for_date(
@@ -174,7 +177,6 @@ class OptionChainSnapshotReader(BaseReader):
             DataFrame with option chain snapshot records (parent table only)
         """
         table_name = self._get_table_name()
-        full_table = f"{self.dataset_name}.{table_name}"
 
         where_clauses = [
             "underlying = $underlying",
@@ -190,12 +192,12 @@ class OptionChainSnapshotReader(BaseReader):
 
         query = f"""
             SELECT *
-            FROM {full_table}
+            FROM {table_name}
             WHERE {where_sql}
             ORDER BY exchange, trading_class
         """
 
-        return self._execute_query(query, params)
+        return self._query_with_duckdb(query, params)
 
     def get_available_snapshots(self, underlying: str) -> Set[date]:
         """
@@ -212,7 +214,7 @@ class OptionChainSnapshotReader(BaseReader):
 
         query = f"""
             SELECT DISTINCT DATE(as_of) as snapshot_date
-            FROM {full_table}
+            FROM {table_name}
             WHERE underlying = $underlying
             ORDER BY snapshot_date
         """
@@ -240,12 +242,12 @@ class OptionChainSnapshotReader(BaseReader):
 
         query = f"""
             SELECT DISTINCT exchange
-            FROM {full_table}
+            FROM {table_name}
             WHERE underlying = $underlying
             AND DATE(as_of) = $as_of
             ORDER BY exchange
         """
 
         params = {"underlying": underlying.upper(), "as_of": as_of}
-        df = self._execute_query(query, params)
+        df = self._query_with_duckdb(query, params)
         return df["exchange"].tolist() if not df.empty else []
