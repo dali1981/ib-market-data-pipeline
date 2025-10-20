@@ -15,6 +15,8 @@ from .sources import (
 from .backfill import (
     snapshot_option_chain,
     option_chain_snapshots_source,
+    backfill_option_bars,
+    option_bars_backfill_source,
 )
 
 __version__ = "0.1.0"
@@ -29,4 +31,6 @@ __all__ = [
     # Backfill resources
     "snapshot_option_chain",
     "option_chain_snapshots_source",
+    "backfill_option_bars",
+    "option_bars_backfill_source",
 ]

@@ -5,14 +5,18 @@ These resources write data to DLT destinations with proper schema and deduplicat
 """
 
 import dlt
-from typing import Iterator, List, Optional
-from datetime import date, datetime
+from typing import Iterator, List, Optional, Tuple
+from datetime import date, datetime, timedelta
 
-from ib_connector import IBRuntime, SecDefService
-from dlt_ibapi.config import IBConnectionConfig
-from dlt_ibapi.config_loader import get_connection_config
+from ib_connector import IBRuntime, SecDefService, HistoricalService, make_option
+from dlt_ibapi.config import IBConnectionConfig, IBHistoricalConfig
+from dlt_ibapi.config_loader import get_connection_config, get_historical_config
 from dlt_ibapi.resolution import ContractCache, ContractResolver
-from dlt_ibapi.backfill.config import OptionChainSnapshotConfig
+from dlt_ibapi.backfill.config import OptionChainSnapshotConfig, OptionBackfillConfig
+from dlt_ibapi.backfill.gap_detection import missing_windows
+from dlt_ibapi.backfill.contract_selection import filter_contracts_by_selection_mode
+from dlt_ibapi.repositories import OptionChainSnapshotReader, OptionBarsReader
+from dlt_ibapi.transformers import normalize_bar_data
 
 
 def _get_runtime(config: Optional[IBConnectionConfig] = None) -> IBRuntime:
@@ -182,3 +186,226 @@ def option_chain_snapshots_source(
         )
 
     return resources
+
+
+@dlt.resource(
+    name="option_bars_backfill",
+    write_disposition="append",
+    primary_key=["underlying", "expiry", "strike", "right", "bar_size", "time"],
+)
+def backfill_option_bars(
+    underlying: str,
+    spot_price: float,
+    database_path: str,
+    dataset_name: str = "options",
+    cache_path: str = ".dlt-ibapi/cache",
+    connection_config: Optional[IBConnectionConfig] = None,
+    backfill_config: Optional[OptionBackfillConfig] = None,
+) -> Iterator[dict]:
+    """
+    DLT resource for backfilling historical option bars with gap detection.
+
+    Workflow:
+    1. Query option chain snapshot for available contracts
+    2. Select contracts based on selection mode (ATM, moneyness, delta)
+    3. For each contract, detect gaps in existing data
+    4. Fetch missing bars from IB API
+    5. Yield normalized bar data to DLT
+
+    Write disposition: append (deduplicates via primary key)
+    Primary key: [underlying, expiry, strike, right, bar_size, time]
+
+    Args:
+        underlying: Underlying symbol (e.g., "AAPL")
+        spot_price: Current spot price (for contract selection)
+        database_path: Path to DLT database (for gap detection)
+        dataset_name: DLT dataset name
+        cache_path: Path to contract cache
+        connection_config: IB connection config (auto-loads if None)
+        backfill_config: Backfill configuration
+
+    Yields:
+        Normalized option bar records
+    """
+    import logging
+    log = logging.getLogger("dlt_ibapi.backfill_option_bars")
+
+    # Default config
+    if backfill_config is None:
+        backfill_config = OptionBackfillConfig(
+            start_date=date.today() - timedelta(days=30),
+            end_date=date.today(),
+        )
+
+    runtime = _get_runtime(connection_config)
+    cache = ContractCache(cache_path)
+    resolver = ContractResolver(runtime, cache)
+
+    # Readers for gap detection
+    chain_reader = OptionChainSnapshotReader(database_path, dataset_name)
+    bars_reader = OptionBarsReader(database_path, dataset_name)
+
+    try:
+        # Step 1: Get option chain snapshot for contract selection
+        log.info(f"Loading option chain snapshot for {underlying}")
+
+        # Find most recent snapshot
+        snapshots = chain_reader.get_available_snapshots(underlying)
+        if not snapshots:
+            log.error(f"No option chain snapshots found for {underlying}. Run snapshot_option_chain first.")
+            return
+
+        latest_snapshot_date = max(snapshots)
+        log.info(f"Using snapshot from {latest_snapshot_date}")
+
+        chain = chain_reader.get_chain_for_date(
+            underlying=underlying,
+            as_of=latest_snapshot_date,
+            min_dte=backfill_config.min_dte,
+            max_dte=backfill_config.max_dte,
+        )
+
+        if chain.empty:
+            log.warning(f"No option chain data found for {underlying}")
+            return
+
+        # Step 2: Select contracts based on mode
+        log.info(f"Selecting contracts using mode: {backfill_config.selection_mode}")
+
+        contracts = filter_contracts_by_selection_mode(
+            chain_snapshot=chain,
+            spot_price=spot_price,
+            as_of=latest_snapshot_date,
+            selection_mode=backfill_config.selection_mode.value,
+            k_strikes=backfill_config.k_strikes,
+            moneyness_levels=backfill_config.moneyness_levels,
+            target_deltas=backfill_config.target_deltas,
+            include_calls=backfill_config.include_calls,
+            include_puts=backfill_config.include_puts,
+        )
+
+        log.info(f"Selected {len(contracts)} contracts for backfill")
+
+        # Step 3: Backfill each contract
+        hist_svc = HistoricalService(runtime)
+
+        for idx, (expiry, strike, right) in enumerate(contracts, 1):
+            log.info(
+                f"[{idx}/{len(contracts)}] Processing {underlying} "
+                f"{expiry} {strike} {right}"
+            )
+
+            # Check if contract is expired
+            if expiry < backfill_config.start_date:
+                log.info(f"Skipping expired contract (expiry={expiry})")
+                continue
+
+            # Gap detection: find missing dates
+            present_dates = bars_reader.get_present_dates_for_contract(
+                underlying=underlying,
+                expiry=expiry,
+                strike=strike,
+                right=right,
+                bar_size=backfill_config.bar_size,
+                start_date=backfill_config.start_date,
+                end_date=min(backfill_config.end_date, expiry),
+            )
+
+            gaps = missing_windows(
+                present_dates=present_dates,
+                start=backfill_config.start_date,
+                end=min(backfill_config.end_date, expiry),
+            )
+
+            if not gaps:
+                log.info(f"No gaps found, data complete")
+                continue
+
+            log.info(f"Found {len(gaps)} gaps to fill")
+
+            # Fetch bars for each gap
+            for gap_start, gap_end in gaps:
+                log.info(f"Fetching bars for gap: {gap_start} to {gap_end}")
+
+                # Create option contract
+                contract = make_option(
+                    symbol=underlying,
+                    expiry=expiry.strftime("%Y%m%d"),
+                    strike=strike,
+                    right=right,
+                    exchange="SMART",
+                )
+
+                # Fetch historical bars
+                try:
+                    bars = hist_svc.bars(
+                        contract=contract,
+                        endDateTime=gap_end.strftime("%Y%m%d 23:59:59"),
+                        durationStr=f"{(gap_end - gap_start).days + 1} D",
+                        barSizeSetting=backfill_config.bar_size,
+                        whatToShow=backfill_config.what_to_show,
+                        useRTH=1 if backfill_config.use_rth else 0,
+                        timeout=30.0,
+                    )
+
+                    bar_count = 0
+                    for bar in bars:
+                        # Normalize and add contract identifiers
+                        record = normalize_bar_data(bar, underlying, "SMART", "USD")
+                        record.update({
+                            "underlying": underlying.upper(),
+                            "expiry": expiry,
+                            "strike": strike,
+                            "right": right.upper(),
+                            "bar_size": backfill_config.bar_size,
+                        })
+
+                        yield record
+                        bar_count += 1
+
+                    log.info(f"Yielded {bar_count} bars for gap {gap_start} to {gap_end}")
+
+                except Exception as e:
+                    log.error(f"Failed to fetch bars for {gap_start} to {gap_end}: {e}")
+                    continue
+
+    finally:
+        runtime.stop()
+
+
+@dlt.source(name="option_bars_backfill_source")
+def option_bars_backfill_source(
+    underlying: str,
+    spot_price: float,
+    database_path: str,
+    dataset_name: str = "options",
+    cache_path: str = ".dlt-ibapi/cache",
+    connection_config: Optional[IBConnectionConfig] = None,
+    backfill_config: Optional[OptionBackfillConfig] = None,
+) -> List:
+    """
+    DLT source wrapper for backfill_option_bars resource.
+
+    Args:
+        underlying: Underlying symbol
+        spot_price: Current spot price
+        database_path: Path to DLT database
+        dataset_name: DLT dataset name
+        cache_path: Path to contract cache
+        connection_config: IB connection config
+        backfill_config: Backfill configuration
+
+    Returns:
+        List containing backfill_option_bars resource
+    """
+    return [
+        backfill_option_bars(
+            underlying=underlying,
+            spot_price=spot_price,
+            database_path=database_path,
+            dataset_name=dataset_name,
+            cache_path=cache_path,
+            connection_config=connection_config,
+            backfill_config=backfill_config,
+        )
+    ]

@@ -10,6 +10,14 @@ from .config import (
 from .resources import (
     snapshot_option_chain,
     option_chain_snapshots_source,
+    backfill_option_bars,
+    option_bars_backfill_source,
+)
+from .contract_selection import (
+    select_k_around_atm,
+    select_by_moneyness,
+    select_by_delta,
+    filter_contracts_by_selection_mode,
 )
 
 __all__ = [
@@ -21,4 +29,10 @@ __all__ = [
     "ContractSelectionMode",
     "snapshot_option_chain",
     "option_chain_snapshots_source",
+    "backfill_option_bars",
+    "option_bars_backfill_source",
+    "select_k_around_atm",
+    "select_by_moneyness",
+    "select_by_delta",
+    "filter_contracts_by_selection_mode",
 ]
