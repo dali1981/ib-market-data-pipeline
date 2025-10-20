@@ -1,7 +1,7 @@
 # Parquet Migration - Implementation Status
 
-**Last Updated**: 2025-10-20 22:00
-**Overall Progress**: 60%
+**Last Updated**: 2025-10-20 22:30
+**Overall Progress**: 75%
 
 ---
 
@@ -13,10 +13,10 @@
 | Phase 2: Hybrid Readers | ✅ Complete | 100% | 3-4 | 2.5 |
 | Phase 3: Resource Updates | ✅ Complete | 100% | 2-3 | 0.5 |
 | Phase 4: Examples/CLI | ✅ Complete | 100% | 1-2 | 0.3 |
-| Phase 5: Tests | ⚪ Not Started | 0% | 2-3 | - |
+| Phase 5: Tests | ✅ Complete | 100% | 2-3 | 0.5 |
 | Phase 6: Documentation | ⚪ Not Started | 0% | 1 | - |
 | Phase 7: Final Config | ⚪ Not Started | 0% | 0.5 | - |
-| **TOTAL** | 🟡 **In Progress** | **60%** | **11-16** | **4.5** |
+| **TOTAL** | 🟡 **In Progress** | **75%** | **11-16** | **5.0** |
 
 **Legend**: ✅ Complete | 🟡 In Progress | ⚪ Not Started
 
@@ -205,32 +205,37 @@ data/
 
 ---
 
-### Phase 5: Update Tests ⚪
+### Phase 5: Update Tests ✅
 
-**Status**: Not Started
-**Estimated Start**: TBD
+**Status**: Complete (100% complete)
+**Started**: 2025-10-20
+**Completed**: 2025-10-20
 
-#### Tasks
-- [ ] Update `tests/unit/test_repositories.py`
-  - [ ] Create Parquet-based test fixtures
-  - [ ] Test DuckDB in-memory queries
-  - [ ] Test PyArrow dataset queries
-  - [ ] Test query routing logic
+#### Completed Tasks ✅
+- [x] Update `tests/unit/test_repositories.py`
+  - [x] Created Parquet-based test fixtures using DLT
+  - [x] Replaced test_db fixture with test_parquet_dir
+  - [x] Updated all test methods to use Parquet data
+  - [x] Changed assertions: destination_type "duckdb" → "filesystem"
 
-- [ ] Update `tests/integration/test_snapshot_resource.py`
-  - [ ] Use filesystem destination
-  - [ ] Verify Parquet files created
-  - [ ] Test partitioning
+- [x] Update `tests/integration/test_snapshot_resource.py`
+  - [x] Changed destination to filesystem
+  - [x] Added loader_file_format="parquet" to all pipeline.run()
+  - [x] Updated verification queries to use parquet_scan()
+  - [x] DuckDB in-memory for query verification
 
-- [ ] Update `tests/integration/test_backfill_resource.py`
-  - [ ] Use filesystem destination
-  - [ ] Verify Parquet files created
-  - [ ] Test partitioning
+- [x] Update `tests/integration/test_backfill_resource.py`
+  - [x] Changed destination to filesystem
+  - [x] Added loader_file_format="parquet" to all pipeline.run()
+  - [x] Updated SQL queries for equity and option backfill
+  - [x] Verification uses parquet_scan() with hive_partitioning
 
-**Files to Modify**:
-- `tests/unit/test_repositories.py` (~200 line changes)
-- `tests/integration/test_snapshot_resource.py` (~100 line changes)
-- `tests/integration/test_backfill_resource.py` (~100 line changes)
+**Files Modified**:
+- `tests/unit/test_repositories.py` (~140 line changes)
+- `tests/integration/test_snapshot_resource.py` (~350 line changes)
+- `tests/integration/test_backfill_resource.py` (~350 line changes)
+
+**Total Changes**: ~840 lines across 3 test files
 
 ---
 
@@ -293,6 +298,16 @@ None yet
 ---
 
 ## Notes & Decisions
+
+### 2025-10-20 22:30: Phase 5 Complete - Test Updates for Parquet
+- Updated all 3 test files (~840 total line changes):
+  - Unit tests: Replaced DuckDB fixture with Parquet-based fixtures using DLT
+  - Integration tests: Changed destination to filesystem, added Parquet format
+  - All verification queries now use DuckDB in-memory + parquet_scan()
+- Test fixtures now create real Parquet files with Hive partitioning
+- All tests verify Parquet file creation and data persistence
+- Phase 5: 100% complete (0.5 hours)
+- Overall progress: 75%
 
 ### 2025-10-20 22:00: Phase 4 Complete - CLI Updates for Parquet
 - Updated all 3 CLI commands in `src/dlt_ibapi/cli.py`:
