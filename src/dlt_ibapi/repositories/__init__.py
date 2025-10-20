@@ -1,8 +1,9 @@
-"""PyArrow/Parquet repositories for market data persistence and gap tracking."""
+"""SQL reader repositories for querying DLT destination databases."""
 
-from .base import BaseRepository, Filter
+from .base import BaseReader
+from .option_chain import OptionChainSnapshotReader
 
 __all__ = [
-    "BaseRepository",
-    "Filter",
+    "BaseReader",
+    "OptionChainSnapshotReader",
 ]
