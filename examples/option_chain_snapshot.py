@@ -87,26 +87,43 @@ def main():
     )
 
     if not chain.empty:
-        logger.info(f"Option chain snapshot contains {len(chain)} parameter sets")
-        print("\n" + "="*80)
-        print(f"Option Chain Snapshot for AAPL ({today})")
-        print("="*80)
-        for idx, row in chain.iterrows():
-            print(f"\nExchange: {row['exchange']}")
-            print(f"Trading Class: {row['trading_class']}")
-            print(f"Multiplier: {row['multiplier']}")
-            print(f"Expirations ({row['expiration_count']}): {row['expirations'][:5]}...")
-            print(f"Strikes ({row['strike_count']}): {row['strikes'][:10]}...")
-        print("="*80 + "\n")
+        logger.info(f"Option chain snapshot contains {len(chain)} parameter sets (exchanges)")
 
-        # Get expirations
+        # Get expirations and strikes using reader methods
         expirations = reader.get_available_expirations(
             underlying="AAPL",
             as_of=today,
             min_dte=7,
             max_dte=60
         )
-        logger.info(f"Available expirations: {expirations[:5]}...")
+
+        strikes = reader.get_strikes_for_expiry(
+            underlying="AAPL",
+            as_of=today,
+            expiry=expirations[0] if expirations else today,  # Use first expiration
+        )
+
+        print("\n" + "="*80)
+        print(f"Option Chain Snapshot for AAPL ({today})")
+        print("="*80)
+        print(f"\nAvailable Exchanges: {len(chain)}")
+        print(f"Sample exchanges: {', '.join(chain['exchange'].head(5).tolist())}")
+        print(f"\nExpirations ({len(expirations)}):")
+        for exp in expirations[:5]:
+            print(f"  - {exp}")
+        if len(expirations) > 5:
+            print(f"  ... and {len(expirations) - 5} more")
+
+        print(f"\nStrikes ({len(strikes)}):")
+        print(f"  Range: ${min(strikes):.2f} - ${max(strikes):.2f}")
+        print(f"  Sample: {[f'${s:.2f}' for s in strikes[:10]]}")
+        if len(strikes) > 10:
+            print(f"  ... and {len(strikes) - 10} more")
+
+        print("="*80 + "\n")
+
+        logger.info(f"Available expirations: {len(expirations)}")
+        logger.info(f"Available strikes: {len(strikes)}")
 
     else:
         logger.warning("No option chain data found!")
