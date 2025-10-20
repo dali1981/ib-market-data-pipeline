@@ -1,0 +1,77 @@
+# Default IB Gateway/TWS Connection Configuration
+# This file is shipped with dlt-ibapi as a default template
+#
+# To override these settings:
+# 1. Copy this file to your project root as .dlt-ibapi/ib_gateway.yaml
+# 2. Or use environment variables: IB_HOST, IB_PORT, IB_CLIENT_ID
+# 3. Or pass IBConnectionConfig directly in your code
+
+connection:
+  # IB Gateway/TWS host address
+  host: 127.0.0.1
+
+  # Port number
+  # 7497: TWS Paper Trading
+  # 7496: TWS Live Trading
+  # 4002: IB Gateway Paper Trading (default)
+  # 4001: IB Gateway Live Trading
+  port: 4002
+
+  # Client ID for this connection (1-32)
+  # Each client connected to IB Gateway must have a unique ID
+  client_id: 1
+
+  # Timeout in seconds for connection to be ready
+  ready_timeout: 10.0
+
+# Historical data request defaults
+historical:
+  # Duration string (e.g., "1 D", "1 W", "1 M", "1 Y")
+  duration: "1 D"
+
+  # Bar size
+  # Options: "1 secs", "5 secs", "10 secs", "15 secs", "30 secs"
+  #          "1 min", "2 mins", "3 mins", "5 mins", "10 mins", "15 mins", "20 mins", "30 mins"
+  #          "1 hour", "2 hours", "3 hours", "4 hours", "8 hours"
+  #          "1 day", "1 week", "1 month"
+  bar_size: "1 min"
+
+  # What to show
+  # Options: "TRADES", "MIDPOINT", "BID", "ASK", "BID_ASK",
+  #          "HISTORICAL_VOLATILITY", "OPTION_IMPLIED_VOLATILITY"
+  what_to_show: "TRADES"
+
+  # Use regular trading hours only (true/false)
+  use_rth: true
+
+  # Request timeout in seconds
+  timeout: 20.0
+
+# Market data snapshot defaults
+market_data:
+  # Generic tick types to request (comma-separated)
+  # Leave empty for standard ticks
+  generic_ticks: ""
+
+  # Request snapshot only (no streaming)
+  snapshot: true
+
+  # Request timeout in seconds
+  timeout: 10.0
+
+# Option chain defaults
+option_chain:
+  # Exchange for option parameters
+  # Leave empty to use default
+  exchange: ""
+
+  # Request timeout in seconds
+  timeout: 10.0
+
+# Default symbols for quick testing
+# These are not used by the library, but available for CLI
+default_symbols:
+  - AAPL
+  - GOOGL
+  - MSFT
+  - TSLA
