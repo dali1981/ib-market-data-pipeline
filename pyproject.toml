@@ -1,0 +1,40 @@
+[project]
+name = "dlt-ibapi"
+version = "0.1.0"
+description = "DLT connector for Interactive Brokers - ingest market data via IB Gateway/TWS into data pipelines"
+requires-python = ">=3.10"
+dependencies = [
+    "dlt[duckdb]>=0.4.0",
+    "ib-connector>=0.1.0",
+    "omegaconf>=2.3.0",
+    "pydantic>=2.0.0",
+    "rich>=14.2.0",
+    "typer>=0.19.2",
+]
+
+[project.scripts]
+dlt-ibapi = "dlt_ibapi.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+]
+
+[tool.uv.sources]
+ib-connector = { path = "../ib-connector", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dlt_ibapi"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"src/dlt_ibapi/config_files" = "dlt_ibapi/config_files"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
