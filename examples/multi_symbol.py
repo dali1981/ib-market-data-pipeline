@@ -27,10 +27,10 @@ def main():
     print(f"Using connection: {connection_config.host}:{connection_config.port}")
     print(f"Fetching data for {len(symbols)} symbols: {', '.join(symbols)}")
 
-    # Create pipeline
+    # Create pipeline with filesystem destination (Parquet)
     pipeline = dlt.pipeline(
         pipeline_name="ib_multi_symbol",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="market_data",
     )
 
@@ -42,9 +42,9 @@ def main():
         connection_config=connection_config,
     )
 
-    info = pipeline.run(source)
+    info = pipeline.run(source, loader_file_format="parquet")
 
-    print(f"\n✓ Pipeline finished!")
+    print(f"\n✓ Pipeline finished! Data in: ./data/{pipeline.dataset_name}/")
     print(f"Tables created: {list(pipeline.default_schema.tables.keys())}")
 
 
@@ -59,7 +59,7 @@ def main_simple():
 
     pipeline = dlt.pipeline(
         pipeline_name="ib_multi_symbol",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="market_data",
     )
 
@@ -70,7 +70,7 @@ def main_simple():
         include_contract_details=True,
     )
 
-    info = pipeline.run(source)
+    info = pipeline.run(source, loader_file_format="parquet")
     print(f"✓ Loaded data for {len(symbols)} symbols!")
 
 

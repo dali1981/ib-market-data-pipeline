@@ -36,12 +36,12 @@ def example_1_yaml_auto_load():
 
     pipeline = dlt.pipeline(
         pipeline_name="ib_yaml_config",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="stocks",
     )
 
     # This will use connection settings from your YAML file
-    info = pipeline.run(data)
+    info = pipeline.run(data, loader_file_format="parquet")
     print(f"Loaded {info}")
 
 
@@ -70,11 +70,11 @@ def example_2_config_loader():
 
     pipeline = dlt.pipeline(
         pipeline_name="ib_loaded_config",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="stocks",
     )
 
-    info = pipeline.run(data)
+    info = pipeline.run(data, loader_file_format="parquet")
     print(f"Loaded {info}")
 
 
@@ -138,11 +138,11 @@ def example_4_override_with_code():
 
     pipeline = dlt.pipeline(
         pipeline_name="ib_override_config",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="stocks",
     )
 
-    info = pipeline.run(data)
+    info = pipeline.run(data, loader_file_format="parquet")
     print(f"Loaded {info}")
 
 
@@ -168,11 +168,11 @@ def example_5_multiple_resources():
 
     pipeline = dlt.pipeline(
         pipeline_name="ib_multi_resource",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="market_data",
     )
 
-    info = pipeline.run(contracts, table_name="contracts")
+    info = pipeline.run(contracts, table_name="contracts", loader_file_format="parquet")
     print(f"Loaded contract details for {len(symbols)} symbols")
 
     # Then get historical data for each
@@ -181,7 +181,7 @@ def example_5_multiple_resources():
             symbol=symbol,
             connection_config=conn_config,
         )
-        info = pipeline.run(bars, table_name="historical_bars")
+        info = pipeline.run(bars, table_name="historical_bars", loader_file_format="parquet")
         print(f"Loaded historical bars for {symbol}")
 
 

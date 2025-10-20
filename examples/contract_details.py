@@ -29,7 +29,7 @@ def main():
 
     pipeline = dlt.pipeline(
         pipeline_name="ib_contracts",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="reference_data",
     )
 
@@ -40,20 +40,21 @@ def main():
         connection_config=connection_config,
     )
 
-    info = pipeline.run(contracts)
+    info = pipeline.run(contracts, loader_file_format="parquet")
 
-    print(f"\n✓ Pipeline finished!")
-    print(f"Contract details loaded to: {pipeline.dataset_name}.contract_details")
+    print(f"\n✓ Pipeline finished! Data in: ./data/{pipeline.dataset_name}/")
+    print(f"Contract details loaded to Parquet files")
 
     # Query the data
     query_contracts(pipeline)
 
 
 def query_contracts(pipeline):
-    """Query and display contract details."""
+    """Query and display contract details from Parquet files."""
     import duckdb
 
-    conn = duckdb.connect(f"{pipeline.pipeline_name}.duckdb")
+    # Query Parquet files with DuckDB in-memory
+    conn = duckdb.connect(":memory:")
 
     result = conn.execute("""
         SELECT
@@ -63,7 +64,7 @@ def query_contracts(pipeline):
             primary_exchange,
             category,
             subcategory
-        FROM reference_data.contract_details
+        FROM parquet_scan('data/contract_details/**/*.parquet', hive_partitioning=true)
         ORDER BY symbol
     """).fetchdf()
 
@@ -90,14 +91,14 @@ def main_simple():
 
     pipeline = dlt.pipeline(
         pipeline_name="ib_contracts",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="reference_data",
     )
 
     # Config is automatically loaded from .dlt-ibapi/ib_gateway.yaml
     contracts = ib_contract_details(symbols=symbols)
 
-    info = pipeline.run(contracts)
+    info = pipeline.run(contracts, loader_file_format="parquet")
     print(f"✓ Loaded contract details for {len(symbols)} symbols!")
 
 

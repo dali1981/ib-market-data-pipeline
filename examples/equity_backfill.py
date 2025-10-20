@@ -55,7 +55,7 @@ def backfill_single_symbol(pipeline, connection_config, symbol="AAPL"):
     # Create backfill resource
     data = backfill_equity_bars(
         symbol=symbol,
-        database_path=f"{pipeline.pipeline_name}.duckdb",
+        database_path="data",  # Point to Parquet directory
         dataset_name=pipeline.dataset_name,
         connection_config=connection_config,
         start_date=start_date,
@@ -65,9 +65,9 @@ def backfill_single_symbol(pipeline, connection_config, symbol="AAPL"):
         use_rth=True,
     )
 
-    # Run pipeline
+    # Run pipeline with Parquet format
     logger.info("Running backfill...")
-    info = pipeline.run(data, write_disposition="append")
+    info = pipeline.run(data, write_disposition="append", loader_file_format="parquet")
 
     if info.has_failed_jobs:
         logger.error(f"Backfill failed for {symbol}!")
@@ -95,7 +95,7 @@ def backfill_multiple_symbols(pipeline, connection_config, symbols=["AAPL", "MSF
     # Create source with multiple resources
     data = equity_bars_backfill_source(
         symbols=symbols,
-        database_path=f"{pipeline.pipeline_name}.duckdb",
+        database_path="data",  # Point to Parquet directory
         dataset_name=pipeline.dataset_name,
         connection_config=connection_config,
         start_date=start_date,
@@ -105,9 +105,9 @@ def backfill_multiple_symbols(pipeline, connection_config, symbols=["AAPL", "MSF
         use_rth=True,
     )
 
-    # Run pipeline
+    # Run pipeline with Parquet format
     logger.info("Running backfill...")
-    info = pipeline.run(data, write_disposition="append")
+    info = pipeline.run(data, write_disposition="append", loader_file_format="parquet")
 
     if info.has_failed_jobs:
         logger.error("Backfill had failures!")
@@ -123,8 +123,9 @@ def query_and_display_results(pipeline):
     logger.info("Query and Analyze Backfilled Data")
     logger.info("="*80)
 
+    # Note: Reader will need Phase 2 updates to work with Parquet
     reader = EquityBarsReader(
-        database_path=f"{pipeline.pipeline_name}.duckdb",
+        database_path="data",  # Point to Parquet directory
         dataset_name=pipeline.dataset_name
     )
 
@@ -187,7 +188,7 @@ def demonstrate_gap_detection(pipeline, connection_config, symbol="AAPL"):
 
     data = backfill_equity_bars(
         symbol=symbol,
-        database_path=f"{pipeline.pipeline_name}.duckdb",
+        database_path="data",  # Point to Parquet directory
         dataset_name=pipeline.dataset_name,
         connection_config=connection_config,
         start_date=date.today() - timedelta(days=30),
@@ -195,7 +196,7 @@ def demonstrate_gap_detection(pipeline, connection_config, symbol="AAPL"):
         bar_size="1 day",
     )
 
-    info = pipeline.run(data, write_disposition="append")
+    info = pipeline.run(data, write_disposition="append", loader_file_format="parquet")
 
     if info.has_failed_jobs:
         logger.error("Gap detection run failed!")
@@ -211,13 +212,13 @@ def main():
     connection_config = get_connection_config()
     logger.info(f"Connection: {connection_config.host}:{connection_config.port}\n")
 
-    # Create DLT pipeline
+    # Create DLT pipeline with filesystem destination (Parquet)
     pipeline = dlt.pipeline(
         pipeline_name="ib_equity_bars",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="stocks",
     )
-    logger.info(f"Pipeline: {pipeline.pipeline_name} -> {pipeline.dataset_name}\n")
+    logger.info(f"Pipeline: {pipeline.pipeline_name} -> Parquet in ./data/{pipeline.dataset_name}/\n")
 
     # Example 1: Backfill single symbol
     # if not backfill_single_symbol(pipeline, connection_config, "AAPL"):

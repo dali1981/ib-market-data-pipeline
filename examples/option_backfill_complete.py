@@ -48,8 +48,9 @@ def step1_capture_snapshot(pipeline, connection_config, underlying="AAPL"):
     today = date.today()
 
     # Check if snapshot already exists
+    # Note: Reader will need Phase 2 updates to work with Parquet
     reader = OptionChainSnapshotReader(
-        database_path=f"{pipeline.pipeline_name}.duckdb",
+        database_path="data",  # Point to Parquet directory
         dataset_name=pipeline.dataset_name
     )
 
@@ -69,7 +70,7 @@ def step1_capture_snapshot(pipeline, connection_config, underlying="AAPL"):
         max_dte=60,
     )
 
-    info = pipeline.run(data, write_disposition="replace")
+    info = pipeline.run(data, write_disposition="replace", loader_file_format="parquet")
 
     if info.has_failed_jobs:
         logger.error("Snapshot capture failed!")
@@ -119,14 +120,14 @@ def step2_backfill_atm(pipeline, connection_config, underlying="AAPL", spot_pric
     data = backfill_option_bars(
         underlying=underlying,
         spot_price=spot_price,
-        database_path=f"{pipeline.pipeline_name}.duckdb",
+        database_path="data",  # Point to Parquet directory
         dataset_name=pipeline.dataset_name,
         connection_config=connection_config,
         backfill_config=config,
     )
 
     logger.info("Running backfill...")
-    info = pipeline.run(data, write_disposition="append")
+    info = pipeline.run(data, write_disposition="append", loader_file_format="parquet")
 
     if info.has_failed_jobs:
         logger.error("Backfill had failures!")
@@ -162,14 +163,14 @@ def step3_backfill_moneyness(pipeline, connection_config, underlying="AAPL", spo
     data = backfill_option_bars(
         underlying=underlying,
         spot_price=spot_price,
-        database_path=f"{pipeline.pipeline_name}.duckdb",
+        database_path="data",  # Point to Parquet directory
         dataset_name=pipeline.dataset_name,
         connection_config=connection_config,
         backfill_config=config,
     )
 
     logger.info("Running backfill...")
-    info = pipeline.run(data, write_disposition="append")
+    info = pipeline.run(data, write_disposition="append", loader_file_format="parquet")
 
     if info.has_failed_jobs:
         logger.error("Backfill had failures!")
@@ -185,8 +186,9 @@ def step4_query_results(pipeline, underlying="AAPL"):
     logger.info("STEP 4: Query and Analyze Backfilled Data")
     logger.info("="*80)
 
+    # Note: Reader will need Phase 2 updates to work with Parquet
     reader = OptionBarsReader(
-        database_path=f"{pipeline.pipeline_name}.duckdb",
+        database_path="data",  # Point to Parquet directory
         dataset_name=pipeline.dataset_name
     )
 
@@ -257,13 +259,13 @@ def main():
 
     logger.info(f"Underlying: {underlying} @ ${spot_price}")
 
-    # Create DLT pipeline
+    # Create DLT pipeline with filesystem destination (Parquet)
     pipeline = dlt.pipeline(
         pipeline_name="ib_option_chains",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="options",
     )
-    logger.info(f"Pipeline: {pipeline.pipeline_name} -> {pipeline.dataset_name}\n")
+    logger.info(f"Pipeline: {pipeline.pipeline_name} -> Parquet in ./data/{pipeline.dataset_name}/\n")
 
     # Run workflow steps
     if not step1_capture_snapshot(pipeline, connection_config, underlying):
