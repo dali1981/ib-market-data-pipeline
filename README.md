@@ -8,6 +8,7 @@ DLT connector for Interactive Brokers - ingest market data from IB Gateway/TWS i
 - [Installation](#installation)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
+- [Historical Data Backfilling](#historical-data-backfilling)
 - [Configuration](#configuration)
   - [YAML Configuration](#method-1-yaml-configuration-recommended)
   - [Environment Variables](#method-2-environment-variables)
@@ -147,6 +148,199 @@ options = ib_option_chain(
 
 pipeline.run(options)
 ```
+
+## Historical Data Backfilling
+
+`dlt-ibapi` provides comprehensive backfill infrastructure for **gap-aware historical data collection** with intelligent contract selection for options.
+
+### Key Features
+
+- **Gap Detection**: Only fetches missing data (idempotent backfills)
+- **Contract Selection**: Flexible strategies for option contracts (ATM, moneyness, delta)
+- **CLI & Python API**: Choose your interface
+- **Multiple Bar Sizes**: From 1-second to daily bars
+
+### Quick Start: Equity Backfill
+
+```python
+import dlt
+from datetime import date, timedelta
+from dlt_ibapi import backfill_equity_bars
+
+# Create pipeline
+pipeline = dlt.pipeline(
+    pipeline_name="ib_stocks",
+    destination="duckdb",
+    dataset_name="stocks",
+)
+
+# Backfill AAPL daily bars (last 30 days)
+data = backfill_equity_bars(
+    symbol="AAPL",
+    database_path="ib_stocks.duckdb",
+    dataset_name="stocks",
+    start_date=date.today() - timedelta(days=30),
+    end_date=date.today(),
+    bar_size="1 day",
+)
+
+# Run pipeline
+info = pipeline.run(data)
+```
+
+**CLI equivalent:**
+```bash
+dlt-ibapi backfill-equity AAPL --bar-size "1 day"
+```
+
+### Option Bars Backfill
+
+Option backfilling requires two steps:
+
+**Step 1: Capture Option Chain Snapshot**
+
+```python
+from dlt_ibapi import snapshot_option_chain
+
+# Capture available strikes and expirations
+snapshot_data = snapshot_option_chain(
+    underlying="AAPL",
+    snapshot_date=date.today(),
+    min_dte=7,   # At least 7 days to expiration
+    max_dte=60,  # At most 60 days to expiration
+)
+
+pipeline.run(snapshot_data, write_disposition="replace")
+```
+
+**Step 2: Backfill Option Bars**
+
+```python
+from dlt_ibapi import backfill_option_bars
+from dlt_ibapi.backfill import OptionBackfillConfig, ContractSelectionMode
+
+# Configure backfill with ATM contract selection
+config = OptionBackfillConfig(
+    start_date=date.today() - timedelta(days=7),
+    end_date=date.today(),
+    bar_size="1 day",
+    selection_mode=ContractSelectionMode.K_AROUND_ATM,
+    k_strikes=3,  # 3 strikes on each side of ATM
+    min_dte=7,
+    max_dte=60,
+)
+
+# Backfill with gap detection
+backfill_data = backfill_option_bars(
+    underlying="AAPL",
+    spot_price=150.0,  # Current AAPL price
+    database_path="ib_option_chains.duckdb",
+    dataset_name="options",
+    backfill_config=config,
+)
+
+pipeline.run(backfill_data, write_disposition="append")
+```
+
+**CLI equivalent:**
+```bash
+# Step 1: Capture snapshot
+dlt-ibapi snapshot AAPL --min-dte 7 --max-dte 60
+
+# Step 2: Backfill
+dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
+```
+
+### Contract Selection Modes
+
+#### K_AROUND_ATM (Most Common)
+Select k strikes on each side of ATM for each expiration.
+
+```python
+selection_mode=ContractSelectionMode.K_AROUND_ATM,
+k_strikes=3,  # 7 total contracts per expiry (3 below + ATM + 3 above)
+```
+
+#### MONEYNESS
+Select strikes by moneyness ratio (strike / spot).
+
+```python
+selection_mode=ContractSelectionMode.MONEYNESS,
+moneyness_levels=[0.90, 0.95, 1.0, 1.05, 1.10],  # 10% OTM to 10% ITM
+```
+
+#### DELTA
+Select strikes by option delta (Black-Scholes).
+
+```python
+selection_mode=ContractSelectionMode.DELTA,
+target_deltas=[0.25, 0.50, 0.75],  # 25, 50, 75 delta calls
+```
+
+### Gap Detection (Idempotency)
+
+Running the same backfill multiple times is safe:
+
+```python
+# First run: Fetches all missing data
+info = pipeline.run(data)
+
+# Second run: Finds no gaps, makes ZERO API calls
+info = pipeline.run(data)  # Instant, no IB API calls
+```
+
+Gap detection:
+1. Queries existing data from database
+2. Calculates missing business days
+3. Only fetches gaps
+4. Deduplicates via DLT primary keys
+
+### Querying Backfilled Data
+
+```python
+from dlt_ibapi.repositories import EquityBarsReader, OptionBarsReader
+
+# Query equity bars
+equity_reader = EquityBarsReader("ib_stocks.duckdb", "stocks")
+bars = equity_reader.get_bars(
+    symbol="AAPL",
+    bar_size="1 day",
+    start_date=date(2024, 1, 1),
+    end_date=date(2024, 12, 31),
+)
+print(bars[['time', 'open', 'high', 'low', 'close', 'volume']])
+
+# Query option bars
+option_reader = OptionBarsReader("ib_options.duckdb", "options")
+contracts = option_reader.get_contracts_for_underlying("AAPL", "1 day")
+print(contracts[['expiry', 'strike', 'right', 'bar_count']])
+```
+
+### CLI Commands
+
+```bash
+# Equity backfill
+dlt-ibapi backfill-equity AAPL MSFT GOOGL --bar-size "1 day"
+
+# Option snapshot
+dlt-ibapi snapshot AAPL --min-dte 7 --max-dte 60
+
+# Option backfill
+dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
+
+# List snapshots
+dlt-ibapi list-snapshots AAPL
+
+# Database statistics
+dlt-ibapi stats ib_options.duckdb --dataset options
+```
+
+### Documentation
+
+For comprehensive documentation:
+- **User Guide**: [docs/BACKFILL_GUIDE.md](docs/BACKFILL_GUIDE.md) - Complete backfill workflows
+- **API Reference**: [docs/API_REFERENCE.md](docs/API_REFERENCE.md) - Full API documentation
+- **Examples**: [examples/](examples/) - Working code samples
 
 ## Configuration
 
