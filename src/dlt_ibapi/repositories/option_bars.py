@@ -2,17 +2,19 @@
 Option bars reader for querying option historical data from DLT.
 
 Queries data written by backfill_option_bars DLT resource.
+Now supports Parquet files with hybrid query routing (DuckDB + PyArrow).
 """
 
 from datetime import date
 from typing import List, Optional, Set
 
 import pandas as pd
+import pyarrow.compute as pc
 
-from .base import BaseReader
+from .parquet_reader import ParquetReaderBase
 
 
-class OptionBarsReader(BaseReader):
+class OptionBarsReader(ParquetReaderBase):
     """
     Reader for option bars data written by DLT.
 
@@ -69,9 +71,13 @@ class OptionBarsReader(BaseReader):
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         limit: Optional[int] = None,
+        use_pyarrow: bool = True,  # Default to PyArrow for large scans
     ) -> pd.DataFrame:
         """
         Get historical bars for specific option contract.
+
+        Uses PyArrow by default for efficient large scans with predicate pushdown.
+        Falls back to DuckDB for small queries or custom SQL needs.
 
         Args:
             underlying: Underlying symbol
@@ -82,50 +88,82 @@ class OptionBarsReader(BaseReader):
             start_date: Filter start date (optional)
             end_date: Filter end date (optional)
             limit: Maximum rows to return
+            use_pyarrow: Use PyArrow for query (default True)
 
         Returns:
-            DataFrame with OHLCV bars
+            DataFrame with OHLCV bars, sorted by time
         """
-        table_name = self._get_table_name()
-        full_table = f"{self.dataset_name}.{table_name}"
+        underlying_upper = underlying.upper()
+        right_upper = right.upper()
 
-        where_clauses = [
-            "underlying = $underlying",
-            "expiry = $expiry",
-            "strike = $strike",
-            "right = $right",
-            "bar_size = $bar_size"
-        ]
+        if use_pyarrow:
+            # Use PyArrow with predicate pushdown
+            filter_expr = (
+                (pc.field("underlying") == underlying_upper) &
+                (pc.field("expiry") == expiry.isoformat()) &
+                (pc.field("strike") == strike) &
+                (pc.field("right") == right_upper) &
+                (pc.field("bar_size") == bar_size)
+            )
 
-        params = {
-            "underlying": underlying.upper(),
-            "expiry": expiry,
-            "strike": strike,
-            "right": right.upper(),
-            "bar_size": bar_size,
-        }
+            if start_date:
+                filter_expr = filter_expr & (pc.field("date") >= start_date.isoformat())
 
-        if start_date:
-            where_clauses.append("DATE(time) >= $start_date")
-            params["start_date"] = start_date
+            if end_date:
+                filter_expr = filter_expr & (pc.field("date") <= end_date.isoformat())
 
-        if end_date:
-            where_clauses.append("DATE(time) <= $end_date")
-            params["end_date"] = end_date
+            df = self._query_with_pyarrow(
+                columns=None,  # Select all columns
+                filters=filter_expr,
+                limit=limit
+            )
 
-        where_sql = " AND ".join(where_clauses)
+            # Sort by time (PyArrow doesn't guarantee order)
+            if not df.empty:
+                df = df.sort_values("time").reset_index(drop=True)
 
-        query = f"""
-            SELECT *
-            FROM {full_table}
-            WHERE {where_sql}
-            ORDER BY time
-        """
+            return df
+        else:
+            # Use DuckDB for custom queries
+            table_name = self._get_table_name()
 
-        if limit:
-            query += f" LIMIT {limit}"
+            where_clauses = [
+                "underlying = $underlying",
+                "expiry = $expiry",
+                "strike = $strike",
+                "right = $right",
+                "bar_size = $bar_size"
+            ]
 
-        return self._execute_query(query, params)
+            params = {
+                "underlying": underlying_upper,
+                "expiry": expiry,
+                "strike": strike,
+                "right": right_upper,
+                "bar_size": bar_size,
+            }
+
+            if start_date:
+                where_clauses.append("DATE(time) >= $start_date")
+                params["start_date"] = start_date
+
+            if end_date:
+                where_clauses.append("DATE(time) <= $end_date")
+                params["end_date"] = end_date
+
+            where_sql = " AND ".join(where_clauses)
+
+            query = f"""
+                SELECT *
+                FROM {table_name}
+                WHERE {where_sql}
+                ORDER BY time
+            """
+
+            if limit:
+                query += f" LIMIT {limit}"
+
+            return self._query_with_duckdb(query, params)
 
     def get_contracts_for_underlying(
         self,
@@ -136,6 +174,7 @@ class OptionBarsReader(BaseReader):
     ) -> pd.DataFrame:
         """
         Get list of option contracts available for an underlying.
+        Uses DuckDB for efficient aggregation.
 
         Args:
             underlying: Underlying symbol
@@ -147,7 +186,6 @@ class OptionBarsReader(BaseReader):
             DataFrame with unique contracts (expiry, strike, right)
         """
         table_name = self._get_table_name()
-        full_table = f"{self.dataset_name}.{table_name}"
 
         where_clauses = ["underlying = $underlying"]
         params = {"underlying": underlying.upper()}
@@ -176,13 +214,13 @@ class OptionBarsReader(BaseReader):
                 MIN(time) as first_bar,
                 MAX(time) as last_bar,
                 COUNT(*) as bar_count
-            FROM {full_table}
+            FROM {table_name}
             WHERE {where_sql}
             GROUP BY underlying, expiry, strike, right, bar_size
             ORDER BY expiry, strike, right
         """
 
-        return self._execute_query(query, params)
+        return self._query_with_duckdb(query, params)
 
     def get_available_expirations(
         self,
@@ -191,6 +229,7 @@ class OptionBarsReader(BaseReader):
     ) -> List[date]:
         """
         Get available expiration dates for an underlying.
+        Uses DuckDB for efficient metadata query.
 
         Args:
             underlying: Underlying symbol
@@ -200,7 +239,6 @@ class OptionBarsReader(BaseReader):
             List of expiration dates
         """
         table_name = self._get_table_name()
-        full_table = f"{self.dataset_name}.{table_name}"
 
         where_clauses = ["underlying = $underlying"]
         params = {"underlying": underlying.upper()}
@@ -213,10 +251,10 @@ class OptionBarsReader(BaseReader):
 
         query = f"""
             SELECT DISTINCT expiry
-            FROM {full_table}
+            FROM {table_name}
             WHERE {where_sql}
             ORDER BY expiry
         """
 
-        df = self._execute_query(query, params)
+        df = self._query_with_duckdb(query, params)
         return df["expiry"].tolist() if not df.empty else []

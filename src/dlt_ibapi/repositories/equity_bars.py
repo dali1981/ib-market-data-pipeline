@@ -2,17 +2,19 @@
 Equity bars reader for querying stock historical data from DLT.
 
 Queries data written by backfill_equity_bars DLT resource.
+Now supports Parquet files with hybrid query routing (DuckDB + PyArrow).
 """
 
 from datetime import date
 from typing import List, Optional, Set
 
 import pandas as pd
+import pyarrow.compute as pc
 
-from .base import BaseReader
+from .parquet_reader import ParquetReaderBase
 
 
-class EquityBarsReader(BaseReader):
+class EquityBarsReader(ParquetReaderBase):
     """
     Reader for equity bars data written by DLT.
 
@@ -59,9 +61,13 @@ class EquityBarsReader(BaseReader):
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         limit: Optional[int] = None,
+        use_pyarrow: bool = True,  # Default to PyArrow for large scans
     ) -> pd.DataFrame:
         """
         Get historical bars for a specific symbol.
+
+        Uses PyArrow by default for efficient large scans with predicate pushdown.
+        Falls back to DuckDB for small queries or custom SQL needs.
 
         Args:
             symbol: Stock symbol
@@ -69,44 +75,70 @@ class EquityBarsReader(BaseReader):
             start_date: Filter start date (optional)
             end_date: Filter end date (optional)
             limit: Maximum rows to return
+            use_pyarrow: Use PyArrow for query (default True)
 
         Returns:
-            DataFrame with OHLCV bars
+            DataFrame with OHLCV bars, sorted by time
         """
-        table_name = self._get_table_name()
-        full_table = f"{self.dataset_name}.{table_name}"
+        symbol_upper = symbol.upper()
 
-        where_clauses = [
-            "symbol = $symbol",
-            "bar_size = $bar_size"
-        ]
+        if use_pyarrow:
+            # Use PyArrow with predicate pushdown
+            filter_expr = (pc.field("symbol") == symbol_upper) & (pc.field("bar_size") == bar_size)
 
-        params = {
-            "symbol": symbol.upper(),
-            "bar_size": bar_size,
-        }
+            if start_date:
+                # Partition column 'date' is string in Hive format, convert to compare
+                filter_expr = filter_expr & (pc.field("date") >= start_date.isoformat())
 
-        if start_date:
-            where_clauses.append("DATE(time) >= $start_date")
-            params["start_date"] = start_date
+            if end_date:
+                filter_expr = filter_expr & (pc.field("date") <= end_date.isoformat())
 
-        if end_date:
-            where_clauses.append("DATE(time) <= $end_date")
-            params["end_date"] = end_date
+            df = self._query_with_pyarrow(
+                columns=None,  # Select all columns
+                filters=filter_expr,
+                limit=limit
+            )
 
-        where_sql = " AND ".join(where_clauses)
+            # Sort by time (PyArrow doesn't guarantee order)
+            if not df.empty:
+                df = df.sort_values("time").reset_index(drop=True)
 
-        query = f"""
-            SELECT *
-            FROM {full_table}
-            WHERE {where_sql}
-            ORDER BY time
-        """
+            return df
+        else:
+            # Use DuckDB for custom queries
+            table_name = self._get_table_name()
 
-        if limit:
-            query += f" LIMIT {limit}"
+            where_clauses = [
+                "symbol = $symbol",
+                "bar_size = $bar_size"
+            ]
 
-        return self._execute_query(query, params)
+            params = {
+                "symbol": symbol_upper,
+                "bar_size": bar_size,
+            }
+
+            if start_date:
+                where_clauses.append("DATE(time) >= $start_date")
+                params["start_date"] = start_date
+
+            if end_date:
+                where_clauses.append("DATE(time) <= $end_date")
+                params["end_date"] = end_date
+
+            where_sql = " AND ".join(where_clauses)
+
+            query = f"""
+                SELECT *
+                FROM {table_name}
+                WHERE {where_sql}
+                ORDER BY time
+            """
+
+            if limit:
+                query += f" LIMIT {limit}"
+
+            return self._query_with_duckdb(query, params)
 
     def get_date_range(
         self,
@@ -115,6 +147,7 @@ class EquityBarsReader(BaseReader):
     ) -> tuple[Optional[date], Optional[date]]:
         """
         Get the date range (min, max) of available data for a symbol.
+        Uses DuckDB for efficient aggregation.
 
         Args:
             symbol: Stock symbol
@@ -124,18 +157,17 @@ class EquityBarsReader(BaseReader):
             Tuple of (min_date, max_date) or (None, None) if no data
         """
         table_name = self._get_table_name()
-        full_table = f"{self.dataset_name}.{table_name}"
 
         query = f"""
             SELECT
                 MIN(DATE(time)) as min_date,
                 MAX(DATE(time)) as max_date
-            FROM {full_table}
+            FROM {table_name}
             WHERE symbol = $symbol AND bar_size = $bar_size
         """
 
         params = {"symbol": symbol.upper(), "bar_size": bar_size}
-        df = self._execute_query(query, params)
+        df = self._query_with_duckdb(query, params)
 
         if df.empty or pd.isna(df.iloc[0]["min_date"]):
             return None, None
@@ -148,6 +180,7 @@ class EquityBarsReader(BaseReader):
     ) -> List[str]:
         """
         Get list of symbols with available data.
+        Uses DuckDB for efficient metadata query.
 
         Args:
             bar_size: Filter by bar size (optional)
@@ -156,12 +189,11 @@ class EquityBarsReader(BaseReader):
             List of symbols
         """
         table_name = self._get_table_name()
-        full_table = f"{self.dataset_name}.{table_name}"
 
         if bar_size:
             query = f"""
                 SELECT DISTINCT symbol
-                FROM {full_table}
+                FROM {table_name}
                 WHERE bar_size = $bar_size
                 ORDER BY symbol
             """
@@ -169,12 +201,12 @@ class EquityBarsReader(BaseReader):
         else:
             query = f"""
                 SELECT DISTINCT symbol
-                FROM {full_table}
+                FROM {table_name}
                 ORDER BY symbol
             """
             params = {}
 
-        df = self._execute_query(query, params)
+        df = self._query_with_duckdb(query, params)
         return df["symbol"].tolist() if not df.empty else []
 
     def get_symbols_summary(
@@ -183,6 +215,7 @@ class EquityBarsReader(BaseReader):
     ) -> pd.DataFrame:
         """
         Get summary statistics for all symbols.
+        Uses DuckDB for efficient aggregation.
 
         Args:
             bar_size: Filter by bar size (optional)
@@ -191,7 +224,6 @@ class EquityBarsReader(BaseReader):
             DataFrame with symbol, bar_size, first_bar, last_bar, bar_count
         """
         table_name = self._get_table_name()
-        full_table = f"{self.dataset_name}.{table_name}"
 
         where_clause = ""
         params = {}
@@ -207,10 +239,10 @@ class EquityBarsReader(BaseReader):
                 MIN(time) as first_bar,
                 MAX(time) as last_bar,
                 COUNT(*) as bar_count
-            FROM {full_table}
+            FROM {table_name}
             {where_clause}
             GROUP BY symbol, bar_size
             ORDER BY symbol, bar_size
         """
 
-        return self._execute_query(query, params)
+        return self._query_with_duckdb(query, params)
