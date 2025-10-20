@@ -1,8 +1,8 @@
 """
 Unit tests for reader repositories.
 
-Tests the SQL query wrappers for EquityBarsReader, OptionBarsReader,
-and OptionChainSnapshotReader using a test DuckDB database.
+Tests the Parquet reader wrappers for EquityBarsReader, OptionBarsReader,
+and OptionChainSnapshotReader using test Parquet files.
 """
 
 import pytest
@@ -11,6 +11,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 import tempfile
+import dlt
 
 from dlt_ibapi.repositories import (
     EquityBarsReader,
@@ -20,127 +21,137 @@ from dlt_ibapi.repositories import (
 
 
 @pytest.fixture
-def test_db():
-    """Create temporary test database with sample data."""
-    # Create temp directory for test database
+def test_parquet_dir():
+    """Create temporary Parquet files with sample data using DLT."""
+    # Create temp directory for Parquet files
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test.duckdb"
-        conn = duckdb.connect(str(db_path))
+        data_dir = Path(tmpdir) / "data"
 
-        # Create datasets (schemas)
-        conn.execute("CREATE SCHEMA IF NOT EXISTS stocks")
-        conn.execute("CREATE SCHEMA IF NOT EXISTS options")
-
-        # Create equity_bars_backfill table
-        conn.execute("""
-            CREATE TABLE stocks.equity_bars_backfill (
-                symbol VARCHAR,
-                bar_size VARCHAR,
-                time TIMESTAMP,
-                open DOUBLE,
-                high DOUBLE,
-                low DOUBLE,
-                close DOUBLE,
-                volume DOUBLE,
-                PRIMARY KEY (symbol, bar_size, time)
-            )
-        """)
-
-        # Insert sample equity data
+        # Create sample equity bars data
         equity_data = [
-            ("AAPL", "1 day", datetime(2024, 1, 2, 16, 0), 150.0, 152.0, 149.0, 151.0, 1000000),
-            ("AAPL", "1 day", datetime(2024, 1, 3, 16, 0), 151.0, 153.0, 150.0, 152.0, 1100000),
-            ("AAPL", "1 day", datetime(2024, 1, 4, 16, 0), 152.0, 154.0, 151.0, 153.0, 1200000),
-            ("MSFT", "1 day", datetime(2024, 1, 2, 16, 0), 370.0, 372.0, 369.0, 371.0, 500000),
-            ("MSFT", "1 day", datetime(2024, 1, 3, 16, 0), 371.0, 373.0, 370.0, 372.0, 550000),
+            {"symbol": "AAPL", "bar_size": "1 day", "time": datetime(2024, 1, 2, 16, 0), "date": "2024-01-02",
+             "open": 150.0, "high": 152.0, "low": 149.0, "close": 151.0, "volume": 1000000, "wap": 150.5, "bar_count": 100},
+            {"symbol": "AAPL", "bar_size": "1 day", "time": datetime(2024, 1, 3, 16, 0), "date": "2024-01-03",
+             "open": 151.0, "high": 153.0, "low": 150.0, "close": 152.0, "volume": 1100000, "wap": 151.5, "bar_count": 110},
+            {"symbol": "AAPL", "bar_size": "1 day", "time": datetime(2024, 1, 4, 16, 0), "date": "2024-01-04",
+             "open": 152.0, "high": 154.0, "low": 151.0, "close": 153.0, "volume": 1200000, "wap": 152.5, "bar_count": 120},
+            {"symbol": "MSFT", "bar_size": "1 day", "time": datetime(2024, 1, 2, 16, 0), "date": "2024-01-02",
+             "open": 370.0, "high": 372.0, "low": 369.0, "close": 371.0, "volume": 500000, "wap": 370.5, "bar_count": 50},
+            {"symbol": "MSFT", "bar_size": "1 day", "time": datetime(2024, 1, 3, 16, 0), "date": "2024-01-03",
+             "open": 371.0, "high": 373.0, "low": 370.0, "close": 372.0, "volume": 550000, "wap": 371.5, "bar_count": 55},
         ]
 
-        for row in equity_data:
-            conn.execute("""
-                INSERT INTO stocks.equity_bars_backfill VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, row)
+        # Write equity data using DLT
+        equity_pipeline = dlt.pipeline(
+            pipeline_name="test_equity",
+            destination=dlt.destinations.filesystem(bucket_url=str(data_dir)),
+            dataset_name="stocks",
+        )
 
-        # Create option_bars_backfill table
-        conn.execute("""
-            CREATE TABLE options.option_bars_backfill (
-                underlying VARCHAR,
-                expiry DATE,
-                strike DOUBLE,
-                right VARCHAR,
-                bar_size VARCHAR,
-                time TIMESTAMP,
-                open DOUBLE,
-                high DOUBLE,
-                low DOUBLE,
-                close DOUBLE,
-                volume DOUBLE,
-                PRIMARY KEY (underlying, expiry, strike, right, bar_size, time)
-            )
-        """)
+        @dlt.resource(
+            name="equity_bars_backfill",
+            write_disposition="append",
+            primary_key=["symbol", "bar_size", "time"],
+            columns={
+                "date": {"partition": True},
+                "symbol": {"partition": True},
+            }
+        )
+        def equity_bars():
+            yield equity_data
 
-        # Insert sample option data
+        equity_pipeline.run(equity_bars(), loader_file_format="parquet")
+
+        # Create sample option bars data
         option_data = [
-            ("AAPL", date(2024, 6, 21), 150.0, "C", "1 day", datetime(2024, 1, 2, 16, 0), 5.0, 5.5, 4.8, 5.2, 100),
-            ("AAPL", date(2024, 6, 21), 150.0, "C", "1 day", datetime(2024, 1, 3, 16, 0), 5.2, 5.7, 5.0, 5.5, 110),
-            ("AAPL", date(2024, 6, 21), 155.0, "C", "1 day", datetime(2024, 1, 2, 16, 0), 3.0, 3.5, 2.8, 3.2, 80),
-            ("AAPL", date(2024, 6, 21), 150.0, "P", "1 day", datetime(2024, 1, 2, 16, 0), 4.0, 4.5, 3.8, 4.2, 90),
+            {"underlying": "AAPL", "expiry": date(2024, 6, 21), "strike": 150.0, "right": "C",
+             "bar_size": "1 day", "time": datetime(2024, 1, 2, 16, 0), "date": "2024-01-02",
+             "open": 5.0, "high": 5.5, "low": 4.8, "close": 5.2, "volume": 100, "wap": 5.1, "bar_count": 10},
+            {"underlying": "AAPL", "expiry": date(2024, 6, 21), "strike": 150.0, "right": "C",
+             "bar_size": "1 day", "time": datetime(2024, 1, 3, 16, 0), "date": "2024-01-03",
+             "open": 5.2, "high": 5.7, "low": 5.0, "close": 5.5, "volume": 110, "wap": 5.3, "bar_count": 11},
+            {"underlying": "AAPL", "expiry": date(2024, 6, 21), "strike": 155.0, "right": "C",
+             "bar_size": "1 day", "time": datetime(2024, 1, 2, 16, 0), "date": "2024-01-02",
+             "open": 3.0, "high": 3.5, "low": 2.8, "close": 3.2, "volume": 80, "wap": 3.1, "bar_count": 8},
+            {"underlying": "AAPL", "expiry": date(2024, 6, 21), "strike": 150.0, "right": "P",
+             "bar_size": "1 day", "time": datetime(2024, 1, 2, 16, 0), "date": "2024-01-02",
+             "open": 4.0, "high": 4.5, "low": 3.8, "close": 4.2, "volume": 90, "wap": 4.1, "bar_count": 9},
         ]
 
-        for row in option_data:
-            conn.execute("""
-                INSERT INTO options.option_bars_backfill VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, row)
+        # Write option data using DLT
+        option_pipeline = dlt.pipeline(
+            pipeline_name="test_option_bars",
+            destination=dlt.destinations.filesystem(bucket_url=str(data_dir)),
+            dataset_name="options",
+        )
 
-        # Create option_chain_snapshot table
-        conn.execute("""
-            CREATE TABLE options.option_chain_snapshot (
-                underlying VARCHAR,
-                as_of DATE,
-                exchange VARCHAR,
-                trading_class VARCHAR,
-                multiplier VARCHAR,
-                expirations VARCHAR[],
-                strikes DOUBLE[],
-                expiration_count INTEGER,
-                strike_count INTEGER,
-                captured_at TIMESTAMP,
-                PRIMARY KEY (underlying, as_of, exchange, trading_class)
-            )
-        """)
+        @dlt.resource(
+            name="option_bars_backfill",
+            write_disposition="append",
+            primary_key=["underlying", "expiry", "strike", "right", "bar_size", "time"],
+            columns={
+                "date": {"partition": True},
+                "symbol": {"partition": True},
+            }
+        )
+        def option_bars():
+            yield option_data
 
-        # Insert sample snapshot
-        conn.execute("""
-            INSERT INTO options.option_chain_snapshot VALUES (
-                'AAPL',
-                '2024-01-02',
-                'SMART',
-                'AAPL',
-                '100',
-                ['20240621', '20240719', '20240816'],
-                [140.0, 145.0, 150.0, 155.0, 160.0],
-                3,
-                5,
-                '2024-01-02 09:30:00'
-            )
-        """)
+        option_pipeline.run(option_bars(), loader_file_format="parquet")
 
-        conn.close()
+        # Create sample option chain snapshot data
+        snapshot_data = [
+            {
+                "underlying": "AAPL",
+                "as_of": date(2024, 1, 2),
+                "date": "2024-01-02",
+                "exchange": "SMART",
+                "trading_class": "AAPL",
+                "multiplier": "100",
+                "expirations": ["20240621", "20240719", "20240816"],
+                "strikes": [140.0, 145.0, 150.0, 155.0, 160.0],
+                "expiration_count": 3,
+                "strike_count": 5,
+                "captured_at": datetime(2024, 1, 2, 9, 30, 0),
+            }
+        ]
 
-        yield db_path
+        # Write snapshot data using DLT
+        snapshot_pipeline = dlt.pipeline(
+            pipeline_name="test_snapshot",
+            destination=dlt.destinations.filesystem(bucket_url=str(data_dir)),
+            dataset_name="options",
+        )
+
+        @dlt.resource(
+            name="option_chain_snapshot",
+            write_disposition="replace",
+            primary_key=["underlying", "as_of", "exchange", "trading_class"],
+            columns={
+                "date": {"partition": True},
+                "underlying": {"partition": True},
+            }
+        )
+        def snapshots():
+            yield snapshot_data
+
+        snapshot_pipeline.run(snapshots(), loader_file_format="parquet")
+
+        yield data_dir
 
 
 class TestEquityBarsReader:
     """Tests for EquityBarsReader."""
 
-    def test_initialization(self, test_db):
+    def test_initialization(self, test_parquet_dir):
         """Test reader initialization."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
         assert reader.dataset_name == "stocks"
-        assert reader.destination_type == "duckdb"
+        assert reader.destination_type == "filesystem"
 
-    def test_get_present_dates_for_symbol(self, test_db):
+    def test_get_present_dates_for_symbol(self, test_parquet_dir):
         """Test getting present dates for a symbol."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         present = reader.get_present_dates_for_symbol(
             symbol="AAPL",
@@ -155,9 +166,9 @@ class TestEquityBarsReader:
         assert date(2024, 1, 3) in present
         assert date(2024, 1, 4) in present
 
-    def test_get_bars(self, test_db):
+    def test_get_bars(self, test_parquet_dir):
         """Test getting bars for a symbol."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         bars = reader.get_bars(
             symbol="AAPL",
@@ -171,9 +182,9 @@ class TestEquityBarsReader:
         assert bars.iloc[0]["close"] == 151.0
         assert bars.iloc[1]["close"] == 152.0
 
-    def test_get_bars_with_limit(self, test_db):
+    def test_get_bars_with_limit(self, test_parquet_dir):
         """Test getting bars with limit."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         bars = reader.get_bars(
             symbol="AAPL",
@@ -183,27 +194,27 @@ class TestEquityBarsReader:
 
         assert len(bars) == 1
 
-    def test_get_date_range(self, test_db):
+    def test_get_date_range(self, test_parquet_dir):
         """Test getting date range."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         min_date, max_date = reader.get_date_range("AAPL", "1 day")
 
         assert min_date == date(2024, 1, 2)
         assert max_date == date(2024, 1, 4)
 
-    def test_get_date_range_no_data(self, test_db):
+    def test_get_date_range_no_data(self, test_parquet_dir):
         """Test getting date range for symbol with no data."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         min_date, max_date = reader.get_date_range("GOOGL", "1 day")
 
         assert min_date is None
         assert max_date is None
 
-    def test_get_available_symbols(self, test_db):
+    def test_get_available_symbols(self, test_parquet_dir):
         """Test getting available symbols."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         symbols = reader.get_available_symbols(bar_size="1 day")
 
@@ -211,9 +222,9 @@ class TestEquityBarsReader:
         assert "AAPL" in symbols
         assert "MSFT" in symbols
 
-    def test_get_symbols_summary(self, test_db):
+    def test_get_symbols_summary(self, test_parquet_dir):
         """Test getting symbols summary."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         summary = reader.get_symbols_summary(bar_size="1 day")
 
@@ -228,9 +239,9 @@ class TestEquityBarsReader:
         msft = summary[summary["symbol"] == "MSFT"].iloc[0]
         assert msft["bar_count"] == 2
 
-    def test_count(self, test_db):
+    def test_count(self, test_parquet_dir):
         """Test count method."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         count = reader.count(symbol="AAPL", bar_size="1 day")
         assert count == 3
@@ -238,9 +249,9 @@ class TestEquityBarsReader:
         count_all = reader.count()
         assert count_all == 5  # 3 AAPL + 2 MSFT
 
-    def test_case_insensitive_symbol(self, test_db):
+    def test_case_insensitive_symbol(self, test_parquet_dir):
         """Test that symbol queries are case-insensitive."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         # Query with lowercase
         bars_lower = reader.get_bars("aapl", "1 day")
@@ -253,14 +264,14 @@ class TestEquityBarsReader:
 class TestOptionBarsReader:
     """Tests for OptionBarsReader."""
 
-    def test_initialization(self, test_db):
+    def test_initialization(self, test_parquet_dir):
         """Test reader initialization."""
-        reader = OptionBarsReader(str(test_db), "options")
+        reader = OptionBarsReader(str(test_parquet_dir), "options")
         assert reader.dataset_name == "options"
 
-    def test_get_present_dates_for_contract(self, test_db):
+    def test_get_present_dates_for_contract(self, test_parquet_dir):
         """Test getting present dates for specific contract."""
-        reader = OptionBarsReader(str(test_db), "options")
+        reader = OptionBarsReader(str(test_parquet_dir), "options")
 
         present = reader.get_present_dates_for_contract(
             underlying="AAPL",
@@ -277,9 +288,9 @@ class TestOptionBarsReader:
         assert date(2024, 1, 2) in present
         assert date(2024, 1, 3) in present
 
-    def test_get_bars(self, test_db):
+    def test_get_bars(self, test_parquet_dir):
         """Test getting bars for specific contract."""
-        reader = OptionBarsReader(str(test_db), "options")
+        reader = OptionBarsReader(str(test_parquet_dir), "options")
 
         bars = reader.get_bars(
             underlying="AAPL",
@@ -294,9 +305,9 @@ class TestOptionBarsReader:
         assert bars.iloc[0]["strike"] == 150.0
         assert bars.iloc[0]["right"] == "C"
 
-    def test_get_contracts_for_underlying(self, test_db):
+    def test_get_contracts_for_underlying(self, test_parquet_dir):
         """Test getting all contracts for underlying."""
-        reader = OptionBarsReader(str(test_db), "options")
+        reader = OptionBarsReader(str(test_parquet_dir), "options")
 
         contracts = reader.get_contracts_for_underlying(
             underlying="AAPL",
@@ -314,9 +325,9 @@ class TestOptionBarsReader:
         assert "first_bar" in contracts.columns
         assert "last_bar" in contracts.columns
 
-    def test_get_available_expirations(self, test_db):
+    def test_get_available_expirations(self, test_parquet_dir):
         """Test getting available expirations."""
-        reader = OptionBarsReader(str(test_db), "options")
+        reader = OptionBarsReader(str(test_parquet_dir), "options")
 
         expirations = reader.get_available_expirations(
             underlying="AAPL",
@@ -326,9 +337,9 @@ class TestOptionBarsReader:
         assert len(expirations) == 1
         assert date(2024, 6, 21) in expirations
 
-    def test_get_bars_with_date_filter(self, test_db):
+    def test_get_bars_with_date_filter(self, test_parquet_dir):
         """Test getting bars with date filtering."""
-        reader = OptionBarsReader(str(test_db), "options")
+        reader = OptionBarsReader(str(test_parquet_dir), "options")
 
         bars = reader.get_bars(
             underlying="AAPL",
@@ -347,23 +358,23 @@ class TestOptionBarsReader:
 class TestOptionChainSnapshotReader:
     """Tests for OptionChainSnapshotReader."""
 
-    def test_initialization(self, test_db):
+    def test_initialization(self, test_parquet_dir):
         """Test reader initialization."""
-        reader = OptionChainSnapshotReader(str(test_db), "options")
+        reader = OptionChainSnapshotReader(str(test_parquet_dir), "options")
         assert reader.dataset_name == "options"
 
-    def test_get_available_snapshots(self, test_db):
+    def test_get_available_snapshots(self, test_parquet_dir):
         """Test getting available snapshot dates."""
-        reader = OptionChainSnapshotReader(str(test_db), "options")
+        reader = OptionChainSnapshotReader(str(test_parquet_dir), "options")
 
         snapshots = reader.get_available_snapshots("AAPL")
 
         assert len(snapshots) == 1
         assert date(2024, 1, 2) in snapshots
 
-    def test_get_chain_for_date(self, test_db):
+    def test_get_chain_for_date(self, test_parquet_dir):
         """Test getting chain for specific date."""
-        reader = OptionChainSnapshotReader(str(test_db), "options")
+        reader = OptionChainSnapshotReader(str(test_parquet_dir), "options")
 
         chain = reader.get_chain_for_date(
             underlying="AAPL",
@@ -377,9 +388,9 @@ class TestOptionChainSnapshotReader:
         assert row["expiration_count"] == 3
         assert row["strike_count"] == 5
 
-    def test_get_available_expirations(self, test_db):
+    def test_get_available_expirations(self, test_parquet_dir):
         """Test getting available expirations from snapshot."""
-        reader = OptionChainSnapshotReader(str(test_db), "options")
+        reader = OptionChainSnapshotReader(str(test_parquet_dir), "options")
 
         expirations = reader.get_available_expirations(
             underlying="AAPL",
@@ -391,9 +402,9 @@ class TestOptionChainSnapshotReader:
         assert date(2024, 7, 19) in expirations
         assert date(2024, 8, 16) in expirations
 
-    def test_get_strikes_for_expiry(self, test_db):
+    def test_get_strikes_for_expiry(self, test_parquet_dir):
         """Test getting strikes for specific expiration."""
-        reader = OptionChainSnapshotReader(str(test_db), "options")
+        reader = OptionChainSnapshotReader(str(test_parquet_dir), "options")
 
         strikes = reader.get_strikes_for_expiry(
             underlying="AAPL",
@@ -406,9 +417,9 @@ class TestOptionChainSnapshotReader:
         assert 150.0 in strikes
         assert 160.0 in strikes
 
-    def test_get_available_expirations_with_dte_filter(self, test_db):
+    def test_get_available_expirations_with_dte_filter(self, test_parquet_dir):
         """Test getting expirations with DTE filtering."""
-        reader = OptionChainSnapshotReader(str(test_db), "options")
+        reader = OptionChainSnapshotReader(str(test_parquet_dir), "options")
 
         # Filter for expirations 140-200 days out
         expirations = reader.get_available_expirations(
@@ -422,9 +433,9 @@ class TestOptionChainSnapshotReader:
         assert len(expirations) == 1
         assert date(2024, 6, 21) in expirations
 
-    def test_get_chain_for_date_no_data(self, test_db):
+    def test_get_chain_for_date_no_data(self, test_parquet_dir):
         """Test getting chain for date with no snapshot."""
-        reader = OptionChainSnapshotReader(str(test_db), "options")
+        reader = OptionChainSnapshotReader(str(test_parquet_dir), "options")
 
         chain = reader.get_chain_for_date(
             underlying="AAPL",
@@ -437,9 +448,9 @@ class TestOptionChainSnapshotReader:
 class TestBaseReaderMethods:
     """Tests for base reader methods (using EquityBarsReader)."""
 
-    def test_load_with_columns(self, test_db):
+    def test_load_with_columns(self, test_parquet_dir):
         """Test load method with column selection."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         df = reader.load(
             columns=["symbol", "close"],
@@ -450,9 +461,9 @@ class TestBaseReaderMethods:
         assert "symbol" in df.columns
         assert "close" in df.columns
 
-    def test_load_all_columns(self, test_db):
+    def test_load_all_columns(self, test_parquet_dir):
         """Test load method without column selection."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         df = reader.load(symbol="AAPL")
 
@@ -461,9 +472,9 @@ class TestBaseReaderMethods:
         assert "open" in df.columns
         assert "close" in df.columns
 
-    def test_query_custom_sql(self, test_db):
+    def test_query_custom_sql(self, test_parquet_dir):
         """Test custom SQL query."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         df = reader.query("""
             SELECT symbol, AVG(close) as avg_close
@@ -487,9 +498,9 @@ class TestEdgeCases:
         with pytest.raises(Exception):  # DuckDB will raise
             reader.get_available_symbols()
 
-    def test_empty_result_set(self, test_db):
+    def test_empty_result_set(self, test_parquet_dir):
         """Test queries that return empty results."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         bars = reader.get_bars(
             symbol="NONEXISTENT",
@@ -498,16 +509,16 @@ class TestEdgeCases:
 
         assert bars.empty
 
-    def test_count_nonexistent_symbol(self, test_db):
+    def test_count_nonexistent_symbol(self, test_parquet_dir):
         """Test count for nonexistent symbol."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         count = reader.count(symbol="NONEXISTENT")
         assert count == 0
 
-    def test_get_present_dates_empty_range(self, test_db):
+    def test_get_present_dates_empty_range(self, test_parquet_dir):
         """Test get_present_dates with no data in range."""
-        reader = EquityBarsReader(str(test_db), "stocks")
+        reader = EquityBarsReader(str(test_parquet_dir), "stocks")
 
         present = reader.get_present_dates_for_symbol(
             symbol="AAPL",

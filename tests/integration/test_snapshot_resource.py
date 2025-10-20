@@ -24,11 +24,11 @@ class TestSnapshotResource:
     """Integration tests for snapshot_option_chain resource."""
 
     @pytest.fixture
-    def temp_db(self):
-        """Create temporary database for testing."""
+    def temp_data_dir(self):
+        """Create temporary data directory for Parquet files."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.duckdb"
-            yield str(db_path)
+            data_dir = Path(tmpdir) / "data"
+            yield str(data_dir)
 
     @pytest.fixture
     def temp_cache(self):
@@ -67,7 +67,7 @@ class TestSnapshotResource:
     def test_snapshot_basic_execution(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
         sample_option_chain,
@@ -81,25 +81,26 @@ class TestSnapshotResource:
         # Run pipeline
         pipeline = dlt.pipeline(
             pipeline_name="test_snapshot",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         resource = snapshot_option_chain(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
         )
 
-        info = pipeline.run(resource)
+        info = pipeline.run(resource, loader_file_format="parquet")
         assert info.has_failed is False
 
-        # Verify data written to database
-        conn = duckdb.connect(temp_db)
+        # Verify data written to Parquet files
+        conn = duckdb.connect(":memory:")
+        parquet_path = Path(temp_data_dir) / "options" / "option_chain_snapshot"
         result = conn.execute(
-            "SELECT COUNT(*) FROM options.option_chain_snapshot"
+            f"SELECT COUNT(*) FROM parquet_scan('{parquet_path}/**/*.parquet', hive_partitioning=true)"
         ).fetchone()
         assert result[0] == 6  # 6 option contracts
 
@@ -107,7 +108,7 @@ class TestSnapshotResource:
     def test_snapshot_data_structure(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
         sample_option_chain,
@@ -121,24 +122,25 @@ class TestSnapshotResource:
         # Run pipeline
         pipeline = dlt.pipeline(
             pipeline_name="test_snapshot_structure",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         resource = snapshot_option_chain(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
         )
 
-        pipeline.run(resource)
+        pipeline.run(resource, loader_file_format="parquet")
 
         # Verify data structure
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
+        parquet_path = Path(temp_data_dir) / "options" / "option_chain_snapshot"
         result = conn.execute(
-            """
+            f"""
             SELECT
                 symbol,
                 expiration,
@@ -146,7 +148,7 @@ class TestSnapshotResource:
                 right,
                 exchange,
                 snapshot_date
-            FROM options.option_chain_snapshot
+            FROM parquet_scan('{parquet_path}/**/*.parquet', hive_partitioning=true)
             WHERE strike = 450.0 AND right = 'C'
             """
         ).fetchone()
@@ -162,7 +164,7 @@ class TestSnapshotResource:
     def test_snapshot_idempotency(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
         sample_option_chain,
@@ -175,26 +177,27 @@ class TestSnapshotResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_snapshot_idempotent",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         resource = snapshot_option_chain(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
         )
 
         # Run twice
-        pipeline.run(resource)
-        pipeline.run(resource)
+        pipeline.run(resource, loader_file_format="parquet")
+        pipeline.run(resource, loader_file_format="parquet")
 
         # Should still have only 6 records (no duplicates)
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
+        parquet_path = Path(temp_data_dir) / "options" / "option_chain_snapshot"
         result = conn.execute(
-            "SELECT COUNT(*) FROM options.option_chain_snapshot"
+            f"SELECT COUNT(*) FROM parquet_scan('{parquet_path}/**/*.parquet', hive_partitioning=true)"
         ).fetchone()
         assert result[0] == 6
 
@@ -202,7 +205,7 @@ class TestSnapshotResource:
     def test_snapshot_multiple_symbols(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
     ):
@@ -229,14 +232,14 @@ class TestSnapshotResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_snapshot_multi",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         # Run for SPY
         resource_spy = snapshot_option_chain(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -246,7 +249,7 @@ class TestSnapshotResource:
         # Run for QQQ
         resource_qqq = snapshot_option_chain(
             symbol="QQQ",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -254,12 +257,13 @@ class TestSnapshotResource:
         pipeline.run(resource_qqq)
 
         # Verify both symbols present
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
+        parquet_path = Path(temp_data_dir) / "options" / "option_chain_snapshot"
         spy_count = conn.execute(
-            "SELECT COUNT(*) FROM options.option_chain_snapshot WHERE symbol = 'SPY'"
+            "SELECT COUNT(*) FROM parquet_scan('{parquet_path}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
         ).fetchone()[0]
         qqq_count = conn.execute(
-            "SELECT COUNT(*) FROM options.option_chain_snapshot WHERE symbol = 'QQQ'"
+            "SELECT COUNT(*) FROM parquet_scan('{parquet_path}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'QQQ'"
         ).fetchone()[0]
 
         assert spy_count == 2
@@ -269,7 +273,7 @@ class TestSnapshotResource:
     def test_snapshot_with_ib_error(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
     ):
@@ -281,13 +285,13 @@ class TestSnapshotResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_snapshot_error",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         resource = snapshot_option_chain(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -295,13 +299,13 @@ class TestSnapshotResource:
 
         # Pipeline should handle error gracefully
         with pytest.raises(Exception):
-            pipeline.run(resource)
+            pipeline.run(resource, loader_file_format="parquet")
 
     @patch("dlt_ibapi.backfill.resources.IBRuntime")
     def test_snapshot_empty_chain(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
     ):
@@ -313,25 +317,26 @@ class TestSnapshotResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_snapshot_empty",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         resource = snapshot_option_chain(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
         )
 
-        info = pipeline.run(resource)
+        info = pipeline.run(resource, loader_file_format="parquet")
         assert info.has_failed is False
 
         # Should have zero records
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
+        parquet_path = Path(temp_data_dir) / "options" / "option_chain_snapshot"
         result = conn.execute(
-            "SELECT COUNT(*) FROM options.option_chain_snapshot"
+            "SELECT COUNT(*) FROM parquet_scan('{parquet_path}/**/*.parquet', hive_partitioning=true)"
         ).fetchone()
         assert result[0] == 0
 
@@ -340,11 +345,11 @@ class TestSnapshotWithContractCache:
     """Test snapshot interaction with contract cache."""
 
     @pytest.fixture
-    def temp_db(self):
-        """Create temporary database."""
+    def temp_data_dir(self):
+        """Create temporary data directory for Parquet files."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.duckdb"
-            yield str(db_path)
+            data_dir = Path(tmpdir) / "data"
+            yield str(data_dir)
 
     @pytest.fixture
     def temp_cache(self):
@@ -367,7 +372,7 @@ class TestSnapshotWithContractCache:
     def test_snapshot_populates_cache(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
     ):
@@ -384,19 +389,19 @@ class TestSnapshotWithContractCache:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_snapshot_cache",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         resource = snapshot_option_chain(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
         )
 
-        pipeline.run(resource)
+        pipeline.run(resource, loader_file_format="parquet")
 
         # Verify cache file exists
         cache_path = Path(temp_cache)
@@ -407,7 +412,7 @@ class TestSnapshotWithContractCache:
     def test_snapshot_with_custom_cache_path(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         mock_connection_config,
     ):
         """Test snapshot with custom cache path."""
@@ -423,19 +428,19 @@ class TestSnapshotWithContractCache:
 
             pipeline = dlt.pipeline(
                 pipeline_name="test_snapshot_custom_cache",
-                destination=dlt.destinations.duckdb(temp_db),
+                destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
                 dataset_name="options",
             )
 
             resource = snapshot_option_chain(
                 symbol="SPY",
-                database_path=temp_db,
+                database_path=temp_data_dir,
                 dataset_name="options",
                 cache_path=custom_cache,
                 connection_config=mock_connection_config,
             )
 
-            pipeline.run(resource)
+            pipeline.run(resource, loader_file_format="parquet")
 
             # Verify cache in custom location
             cache_path = Path(custom_cache)

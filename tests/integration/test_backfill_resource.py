@@ -31,11 +31,11 @@ class TestEquityBackfillResource:
     """Integration tests for equity bars backfill resource."""
 
     @pytest.fixture
-    def temp_db(self):
-        """Create temporary database for testing."""
+    def temp_data_dir(self):
+        """Create temporary data directory for Parquet files."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.duckdb"
-            yield str(db_path)
+            data_dir = Path(tmpdir) / "data"
+            yield str(data_dir)
 
     @pytest.fixture
     def temp_cache(self):
@@ -80,7 +80,7 @@ class TestEquityBackfillResource:
     def test_equity_backfill_basic(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
         sample_bar_data,
@@ -94,13 +94,13 @@ class TestEquityBackfillResource:
         # Run pipeline
         pipeline = dlt.pipeline(
             pipeline_name="test_equity_backfill",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="stocks",
         )
 
         resource = backfill_equity_bars(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="stocks",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -109,13 +109,13 @@ class TestEquityBackfillResource:
             bar_size="1 day",
         )
 
-        info = pipeline.run(resource)
+        info = pipeline.run(resource, loader_file_format="parquet")
         assert info.has_failed is False
 
         # Verify data written to database
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
         result = conn.execute(
-            "SELECT COUNT(*) FROM stocks.equity_bars_backfill WHERE symbol = 'SPY'"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
         ).fetchone()
         assert result[0] == 5  # 5 days of bars
 
@@ -123,7 +123,7 @@ class TestEquityBackfillResource:
     def test_equity_backfill_data_structure(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
         sample_bar_data,
@@ -136,13 +136,13 @@ class TestEquityBackfillResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_equity_structure",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="stocks",
         )
 
         resource = backfill_equity_bars(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="stocks",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -151,10 +151,10 @@ class TestEquityBackfillResource:
             bar_size="1 day",
         )
 
-        pipeline.run(resource)
+        pipeline.run(resource, loader_file_format="parquet")
 
         # Verify data structure
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
         result = conn.execute(
             """
             SELECT
@@ -168,7 +168,7 @@ class TestEquityBackfillResource:
                 volume,
                 average,
                 bar_count
-            FROM stocks.equity_bars_backfill
+            FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true)
             WHERE symbol = 'SPY'
             ORDER BY time
             LIMIT 1
@@ -190,7 +190,7 @@ class TestEquityBackfillResource:
     def test_equity_backfill_gap_detection(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
     ):
@@ -238,13 +238,13 @@ class TestEquityBackfillResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_equity_gap",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="stocks",
         )
 
         resource = backfill_equity_bars(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="stocks",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -253,12 +253,12 @@ class TestEquityBackfillResource:
             bar_size="1 day",
         )
 
-        pipeline.run(resource)
+        pipeline.run(resource, loader_file_format="parquet")
 
         # Verify initial data
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
         initial_count = conn.execute(
-            "SELECT COUNT(*) FROM stocks.equity_bars_backfill WHERE symbol = 'SPY'"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
         ).fetchone()[0]
         assert initial_count == 3  # Only 3 bars initially
 
@@ -289,7 +289,7 @@ class TestEquityBackfillResource:
 
         resource2 = backfill_equity_bars(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="stocks",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -302,7 +302,7 @@ class TestEquityBackfillResource:
 
         # Verify gaps filled
         final_count = conn.execute(
-            "SELECT COUNT(*) FROM stocks.equity_bars_backfill WHERE symbol = 'SPY'"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
         ).fetchone()[0]
         assert final_count == 5  # All 5 bars now present
 
@@ -310,7 +310,7 @@ class TestEquityBackfillResource:
     def test_equity_backfill_multiple_symbols(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
     ):
@@ -352,14 +352,14 @@ class TestEquityBackfillResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_equity_multi",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="stocks",
         )
 
         # Backfill SPY
         resource_spy = backfill_equity_bars(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="stocks",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -372,7 +372,7 @@ class TestEquityBackfillResource:
         # Backfill QQQ
         resource_qqq = backfill_equity_bars(
             symbol="QQQ",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="stocks",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -383,12 +383,12 @@ class TestEquityBackfillResource:
         pipeline.run(resource_qqq)
 
         # Verify both symbols present
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
         spy_count = conn.execute(
-            "SELECT COUNT(*) FROM stocks.equity_bars_backfill WHERE symbol = 'SPY'"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
         ).fetchone()[0]
         qqq_count = conn.execute(
-            "SELECT COUNT(*) FROM stocks.equity_bars_backfill WHERE symbol = 'QQQ'"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'QQQ'"
         ).fetchone()[0]
 
         assert spy_count == 1
@@ -479,7 +479,7 @@ class TestOptionBackfillResource:
     def test_option_backfill_atm_mode(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
         sample_option_bars,
@@ -503,13 +503,13 @@ class TestOptionBackfillResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_option_backfill_atm",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         resource = backfill_option_bars(
             config=config,
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -518,15 +518,15 @@ class TestOptionBackfillResource:
             bar_size="1 day",
         )
 
-        info = pipeline.run(resource)
+        info = pipeline.run(resource, loader_file_format="parquet")
         assert info.has_failed is False
 
         # Verify data written
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
         result = conn.execute(
             """
             SELECT COUNT(DISTINCT strike)
-            FROM options.option_bars_backfill
+            FROM parquet_scan('{Path(temp_data_dir) / "options" / "option_bars_backfill"}/**/*.parquet', hive_partitioning=true)
             WHERE symbol = 'SPY' AND expiration = '20240115'
             """
         ).fetchone()
@@ -537,7 +537,7 @@ class TestOptionBackfillResource:
     def test_option_backfill_moneyness_mode(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
         sample_option_bars,
@@ -560,13 +560,13 @@ class TestOptionBackfillResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_option_backfill_moneyness",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         resource = backfill_option_bars(
             config=config,
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -575,15 +575,15 @@ class TestOptionBackfillResource:
             bar_size="1 day",
         )
 
-        info = pipeline.run(resource)
+        info = pipeline.run(resource, loader_file_format="parquet")
         assert info.has_failed is False
 
         # Verify strikes within moneyness range
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
         result = conn.execute(
             """
             SELECT MIN(strike), MAX(strike)
-            FROM options.option_bars_backfill
+            FROM parquet_scan('{Path(temp_data_dir) / "options" / "option_bars_backfill"}/**/*.parquet', hive_partitioning=true)
             WHERE symbol = 'SPY' AND expiration = '20240115'
             """
         ).fetchone()
@@ -598,7 +598,7 @@ class TestOptionBackfillResource:
     def test_option_backfill_all_mode(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
         sample_option_bars,
@@ -618,13 +618,13 @@ class TestOptionBackfillResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_option_backfill_all",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         resource = backfill_option_bars(
             config=config,
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -633,15 +633,15 @@ class TestOptionBackfillResource:
             bar_size="1 day",
         )
 
-        info = pipeline.run(resource)
+        info = pipeline.run(resource, loader_file_format="parquet")
         assert info.has_failed is False
 
         # Verify all strikes from snapshot were backfilled
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
         result = conn.execute(
             """
             SELECT COUNT(DISTINCT strike)
-            FROM options.option_bars_backfill
+            FROM parquet_scan('{Path(temp_data_dir) / "options" / "option_bars_backfill"}/**/*.parquet', hive_partitioning=true)
             WHERE symbol = 'SPY' AND expiration = '20240115'
             """
         ).fetchone()
@@ -652,7 +652,7 @@ class TestOptionBackfillResource:
     def test_option_backfill_gap_detection(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
         sample_option_bars,
@@ -671,14 +671,14 @@ class TestOptionBackfillResource:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_option_gap",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="options",
         )
 
         # First run
         resource1 = backfill_option_bars(
             config=config,
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -690,15 +690,15 @@ class TestOptionBackfillResource:
         pipeline.run(resource1)
 
         # Verify initial data
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
         initial_count = conn.execute(
-            "SELECT COUNT(*) FROM options.option_bars_backfill"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "options" / "option_bars_backfill"}/**/*.parquet', hive_partitioning=true)"
         ).fetchone()[0]
 
         # Second run (should be idempotent)
         resource2 = backfill_option_bars(
             config=config,
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="options",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -711,7 +711,7 @@ class TestOptionBackfillResource:
 
         # Should have same count (idempotent)
         final_count = conn.execute(
-            "SELECT COUNT(*) FROM options.option_bars_backfill"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "options" / "option_bars_backfill"}/**/*.parquet', hive_partitioning=true)"
         ).fetchone()[0]
         assert final_count == initial_count
 
@@ -747,7 +747,7 @@ class TestBackfillErrorHandling:
     def test_equity_backfill_with_ib_error(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
     ):
@@ -759,13 +759,13 @@ class TestBackfillErrorHandling:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_equity_error",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="stocks",
         )
 
         resource = backfill_equity_bars(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="stocks",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -776,13 +776,13 @@ class TestBackfillErrorHandling:
 
         # Pipeline should handle error gracefully
         with pytest.raises(Exception):
-            pipeline.run(resource)
+            pipeline.run(resource, loader_file_format="parquet")
 
     @patch("dlt_ibapi.backfill.resources.IBRuntime")
     def test_equity_backfill_empty_bars(
         self,
         mock_runtime_class,
-        temp_db,
+        temp_data_dir,
         temp_cache,
         mock_connection_config,
     ):
@@ -794,13 +794,13 @@ class TestBackfillErrorHandling:
 
         pipeline = dlt.pipeline(
             pipeline_name="test_equity_empty",
-            destination=dlt.destinations.duckdb(temp_db),
+            destination=dlt.destinations.filesystem(bucket_url=temp_data_dir),
             dataset_name="stocks",
         )
 
         resource = backfill_equity_bars(
             symbol="SPY",
-            database_path=temp_db,
+            database_path=temp_data_dir,
             dataset_name="stocks",
             cache_path=temp_cache,
             connection_config=mock_connection_config,
@@ -809,22 +809,22 @@ class TestBackfillErrorHandling:
             bar_size="1 day",
         )
 
-        info = pipeline.run(resource)
+        info = pipeline.run(resource, loader_file_format="parquet")
         assert info.has_failed is False
 
         # Should have zero records
-        conn = duckdb.connect(temp_db)
+        conn = duckdb.connect(":memory:")
         result = conn.execute(
-            "SELECT COUNT(*) FROM stocks.equity_bars_backfill"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true)"
         ).fetchone()
         assert result[0] == 0
 
-    def test_invalid_date_range(self, temp_db, temp_cache, mock_connection_config):
+    def test_invalid_date_range(self, temp_data_dir, temp_cache, mock_connection_config):
         """Test that invalid date range raises error."""
         with pytest.raises(ValueError):
             resource = backfill_equity_bars(
                 symbol="SPY",
-                database_path=temp_db,
+                database_path=temp_data_dir,
                 dataset_name="stocks",
                 cache_path=temp_cache,
                 connection_config=mock_connection_config,
