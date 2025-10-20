@@ -8,6 +8,10 @@ def normalize_bar_data(bar: Dict[str, Any], symbol: str, exchange: str, currency
     """
     Normalize historical bar data from IB API format to DLT schema.
 
+    Adds partition columns for Parquet storage:
+    - time: Full datetime (primary key)
+    - date: Date only (partition column)
+
     Args:
         bar: Raw bar data from IB API
         symbol: Stock symbol
@@ -15,13 +19,34 @@ def normalize_bar_data(bar: Dict[str, Any], symbol: str, exchange: str, currency
         currency: Currency
 
     Returns:
-        Normalized bar data
+        Normalized bar data with partition columns
     """
+    # Get timestamp from bar (IB returns datetime string)
+    bar_datetime = bar.get("date")
+
+    # Extract date for partitioning if datetime is available
+    bar_date = None
+    if bar_datetime:
+        if isinstance(bar_datetime, str):
+            # Parse datetime string to extract date
+            try:
+                from datetime import datetime as dt
+                parsed_dt = dt.fromisoformat(bar_datetime.replace(" ", "T"))
+                bar_date = parsed_dt.date().isoformat()
+            except:
+                # If parsing fails, try to extract date portion (YYYY-MM-DD)
+                bar_date = bar_datetime[:10] if len(bar_datetime) >= 10 else None
+        elif hasattr(bar_datetime, 'date'):
+            # datetime object
+            bar_date = bar_datetime.date().isoformat()
+
     return {
         "symbol": symbol,
         "exchange": exchange,
         "currency": currency,
-        "timestamp": bar.get("date"),
+        "time": bar_datetime,  # Full datetime (primary key)
+        "date": bar_date,      # Date only (partition column for Hive partitioning)
+        "timestamp": bar_datetime,  # Backward compatibility
         "open": float(bar.get("open", 0)),
         "high": float(bar.get("high", 0)),
         "low": float(bar.get("low", 0)),

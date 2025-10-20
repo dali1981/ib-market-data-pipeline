@@ -32,6 +32,10 @@ def _get_runtime(config: Optional[IBConnectionConfig] = None) -> IBRuntime:
     name="option_chain_snapshot",
     write_disposition="replace",  # Replace snapshots for same date
     primary_key=["underlying", "as_of", "exchange", "trading_class"],
+    columns={
+        "date": {"partition": True},  # Partition column for Hive partitioning
+        "underlying": {"partition": True},  # Secondary partition
+    }
 )
 def snapshot_option_chain(
     underlying: str,
@@ -136,6 +140,7 @@ def snapshot_option_chain(
                 "expiration_count": len(filtered_expirations),
                 "strike_count": len(strikes),
                 "as_of": snapshot_date,
+                "date": snapshot_date.isoformat(),  # Partition column for Hive partitioning
                 "captured_at": datetime.utcnow(),
             }
 
@@ -193,6 +198,10 @@ def option_chain_snapshots_source(
     name="option_bars_backfill",
     write_disposition="append",
     primary_key=["underlying", "expiry", "strike", "right", "bar_size", "time"],
+    columns={
+        "date": {"partition": True},  # Partition column for Hive partitioning
+        "symbol": {"partition": True},  # Secondary partition (symbol = underlying for options)
+    }
 )
 def backfill_option_bars(
     underlying: str,
@@ -416,6 +425,10 @@ def option_bars_backfill_source(
     name="equity_bars_backfill",
     write_disposition="append",
     primary_key=["symbol", "bar_size", "time"],
+    columns={
+        "date": {"partition": True},  # Partition column for Hive partitioning
+        "symbol": {"partition": True},  # Secondary partition
+    }
 )
 def backfill_equity_bars(
     symbol: str,
