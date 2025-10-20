@@ -95,9 +95,10 @@ def ib_historical_bars(
         end_datetime = end_date or ""
 
         log.info(
-            f"Fetching historical bars for {symbol}: "
+            f"IB Request: symbol={symbol}, exchange={exchange}, currency={currency}, "
+            f"sec_type={sec_type}, end_date='{end_datetime or 'now'}', "
             f"duration={hist_cfg.duration}, bar_size={hist_cfg.bar_size}, "
-            f"what_to_show={hist_cfg.what_to_show}"
+            f"what_to_show={hist_cfg.what_to_show}, use_rth={hist_cfg.use_rth}"
         )
 
         bars = hist_svc.bars(
@@ -115,7 +116,7 @@ def ib_historical_bars(
             yield normalize_bar_data(bar, symbol, exchange, currency)
             bar_count += 1
 
-        log.info(f"Fetched {bar_count} bars for {symbol}")
+        log.info(f"Yielded {bar_count} bars for {symbol}")
 
     finally:
         runtime.stop()

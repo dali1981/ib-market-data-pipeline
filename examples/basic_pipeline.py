@@ -84,7 +84,13 @@ def main():
 
     # Query to show results
     import duckdb
-    conn = duckdb.connect(f"{pipeline.pipeline_name}.duckdb")
+    import os
+
+    db_path = f"{pipeline.pipeline_name}.duckdb"
+    db_full_path = os.path.abspath(db_path)
+    logger.info(f"Database location: {db_full_path}")
+
+    conn = duckdb.connect(db_path)
 
     result = conn.execute("""
         SELECT COUNT(*) as row_count
@@ -93,7 +99,30 @@ def main():
 
     logger.info(f"Total rows in database: {result[0]}")
 
+    # Check for duplicates
+    duplicates = conn.execute("""
+        SELECT timestamp, COUNT(*) as count
+        FROM stocks.historical_bars
+        GROUP BY timestamp
+        HAVING COUNT(*) > 1
+        ORDER BY count DESC
+        LIMIT 5
+    """).fetchall()
+
+    if duplicates:
+        logger.warning(f"Found {len(duplicates)} duplicate timestamps!")
+        logger.warning(f"Most duplicated: {duplicates[0][0]} appears {duplicates[0][1]} times")
+        logger.warning("Tip: Use write_disposition='replace' to avoid duplicates on re-runs")
+
     if result[0] > 0:
+        # Get distinct timestamps
+        distinct_count = conn.execute("""
+            SELECT COUNT(DISTINCT timestamp) as distinct_count
+            FROM stocks.historical_bars
+        """).fetchone()
+
+        logger.info(f"Unique timestamps: {distinct_count[0]}")
+
         sample = conn.execute("""
             SELECT timestamp, open, high, low, close, volume
             FROM stocks.historical_bars
