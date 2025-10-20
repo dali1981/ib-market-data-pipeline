@@ -1,7 +1,7 @@
 # Parquet Migration - Implementation Status
 
-**Last Updated**: 2025-10-20
-**Overall Progress**: 10%
+**Last Updated**: 2025-10-20 19:50
+**Overall Progress**: 15%
 
 ---
 
@@ -9,14 +9,14 @@
 
 | Phase | Status | Progress | Est. Hours | Actual Hours |
 |-------|--------|----------|------------|--------------|
-| Phase 1: DLT Config | 🟡 In Progress | 30% | 1-2 | 0.5 |
+| Phase 1: DLT Config | 🟡 In Progress | 50% | 1-2 | 0.7 |
 | Phase 2: Hybrid Readers | ⚪ Not Started | 0% | 3-4 | - |
 | Phase 3: Resource Updates | ⚪ Not Started | 0% | 2-3 | - |
 | Phase 4: Examples/CLI | ⚪ Not Started | 0% | 1-2 | - |
 | Phase 5: Tests | ⚪ Not Started | 0% | 2-3 | - |
 | Phase 6: Documentation | ⚪ Not Started | 0% | 1 | - |
 | Phase 7: Final Config | ⚪ Not Started | 0% | 0.5 | - |
-| **TOTAL** | 🟡 **In Progress** | **10%** | **11-16** | **0.5** |
+| **TOTAL** | 🟡 **In Progress** | **15%** | **11-16** | **0.7** |
 
 **Legend**: ✅ Complete | 🟡 In Progress | ⚪ Not Started
 
@@ -26,7 +26,7 @@
 
 ### Phase 1: Update DLT Pipeline Configuration 🟡
 
-**Status**: In Progress (30% complete)
+**Status**: In Progress (50% complete)
 **Started**: 2025-10-20
 
 #### Completed Tasks ✅
@@ -34,14 +34,17 @@
 - [x] Updated `pyproject.toml` to include `dlt[filesystem,parquet]` extras
 - [x] Created migration plan documentation
 - [x] Created status tracking document
+- [x] Updated `examples/basic_pipeline.py` for filesystem destination
+- [x] Updated `examples/option_chain_snapshot.py` for filesystem destination
 
 #### In Progress 🟡
-- [ ] Update example files to use filesystem destination
-- [ ] Update CLI to use filesystem destination
-- [ ] Update tests to use filesystem destination
+- [ ] Update `examples/equity_backfill.py`
+- [ ] Update `examples/option_backfill_complete.py`
+- [ ] Update remaining examples
+- [ ] Update CLI commands
 
 #### Pending ⚪
-- [ ] Test DLT filesystem destination locally
+- [ ] Test DLT filesystem destination with real IB data
 - [ ] Verify partitioning works as expected
 
 **Files Modified**:
@@ -49,6 +52,8 @@
 - `pyproject.toml` (updated dependencies)
 - `specs/PARQUET_MIGRATION_PLAN.md` (created)
 - `specs/PARQUET_MIGRATION_STATUS.md` (created)
+- `examples/basic_pipeline.py` (updated for Parquet)
+- `examples/option_chain_snapshot.py` (updated for Parquet)
 
 ---
 
@@ -240,7 +245,15 @@ None yet
 
 ## Notes & Decisions
 
-### 2025-10-20: Initial Setup
+### 2025-10-20 19:50: Examples Update
+- Updated `basic_pipeline.py` to use filesystem destination
+  - Changed to `dlt.destinations.filesystem(bucket_url="data")`
+  - Added `loader_file_format="parquet"` to pipeline.run()
+  - Updated all queries to use DuckDB in-memory with parquet_scan()
+- Updated `option_chain_snapshot.py` similarly
+  - Note: Reader initialization still points to old path, will be fixed in Phase 2
+
+### 2025-10-20 19:30: Initial Setup
 - Created DLT config with Parquet and filesystem settings
 - Decided on date/symbol partitioning strategy
 - Chose hybrid query approach (DuckDB for small, PyArrow for large)

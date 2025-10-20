@@ -38,13 +38,13 @@ def main():
     connection_config = get_connection_config()
     logger.info(f"Connection: {connection_config.host}:{connection_config.port}")
 
-    # Create DLT pipeline
+    # Create DLT pipeline with filesystem destination (Parquet)
     pipeline = dlt.pipeline(
         pipeline_name="ib_option_chains",
-        destination="duckdb",
+        destination=dlt.destinations.filesystem(bucket_url="data"),
         dataset_name="options",
     )
-    logger.info(f"Pipeline: {pipeline.pipeline_name} -> {pipeline.dataset_name}")
+    logger.info(f"Pipeline: {pipeline.pipeline_name} -> Parquet in ./data/{pipeline.dataset_name}/")
 
     # Capture option chain snapshot for today
     today = date.today()
@@ -58,9 +58,9 @@ def main():
         max_dte=60,  # At most 60 days to expiration
     )
 
-    # Run pipeline
+    # Run pipeline with Parquet format
     logger.info("Running DLT pipeline...")
-    info = pipeline.run(data, write_disposition="replace")
+    info = pipeline.run(data, write_disposition="replace", loader_file_format="parquet")
 
     if info.has_failed_jobs:
         logger.error("Pipeline had failures")
@@ -68,9 +68,11 @@ def main():
 
     logger.info("Pipeline completed successfully!")
 
-    # Query results using reader
+    # Query results using reader (will query Parquet files with DuckDB)
+    # Note: Reader still needs to be updated for Parquet in Phase 2
+    # For now, this will fail - temporary placeholder
     reader = OptionChainSnapshotReader(
-        database_path=f"{pipeline.pipeline_name}.duckdb",
+        database_path="data",  # Point to Parquet directory
         dataset_name=pipeline.dataset_name
     )
 
