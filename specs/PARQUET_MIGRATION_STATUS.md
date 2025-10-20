@@ -1,7 +1,7 @@
 # Parquet Migration - Implementation Status
 
-**Last Updated**: 2025-10-20 21:30
-**Overall Progress**: 50%
+**Last Updated**: 2025-10-20 22:00
+**Overall Progress**: 60%
 
 ---
 
@@ -12,11 +12,11 @@
 | Phase 1: DLT Config | ✅ Complete | 100% | 1-2 | 1.2 |
 | Phase 2: Hybrid Readers | ✅ Complete | 100% | 3-4 | 2.5 |
 | Phase 3: Resource Updates | ✅ Complete | 100% | 2-3 | 0.5 |
-| Phase 4: Examples/CLI | ⚪ Not Started | 0% | 1-2 | - |
+| Phase 4: Examples/CLI | ✅ Complete | 100% | 1-2 | 0.3 |
 | Phase 5: Tests | ⚪ Not Started | 0% | 2-3 | - |
 | Phase 6: Documentation | ⚪ Not Started | 0% | 1 | - |
 | Phase 7: Final Config | ⚪ Not Started | 0% | 0.5 | - |
-| **TOTAL** | 🟡 **In Progress** | **50%** | **11-16** | **4.2** |
+| **TOTAL** | 🟡 **In Progress** | **60%** | **11-16** | **4.5** |
 
 **Legend**: ✅ Complete | 🟡 In Progress | ⚪ Not Started
 
@@ -155,40 +155,53 @@ data/
 
 ---
 
-### Phase 4: Update Examples and CLI ⚪
+### Phase 4: Update Examples and CLI ✅
 
-**Status**: Not Started
-**Estimated Start**: TBD
+**Status**: Complete (100% complete)
+**Started**: 2025-10-20
+**Completed**: 2025-10-20
 
-#### Tasks
-- [ ] Update `examples/option_chain_snapshot.py`
-- [ ] Update `examples/equity_backfill.py`
-- [ ] Update `examples/option_backfill_complete.py`
-- [ ] Update `examples/basic_pipeline.py`
-- [ ] Update `examples/multi_symbol.py`
-- [ ] Update `examples/contract_details.py`
-- [ ] Update `examples/config_example.py`
-- [ ] Update `src/dlt_ibapi/cli.py` (all commands)
+#### Completed Tasks ✅
+- [x] Update `examples/option_chain_snapshot.py`
+- [x] Update `examples/equity_backfill.py`
+- [x] Update `examples/option_backfill_complete.py`
+- [x] Update `examples/basic_pipeline.py`
+- [x] Update `examples/multi_symbol.py`
+- [x] Update `examples/contract_details.py`
+- [x] Update `examples/config_example.py`
+- [x] Update `src/dlt_ibapi/cli.py` - snapshot command
+- [x] Update `src/dlt_ibapi/cli.py` - backfill-option command
+- [x] Update `src/dlt_ibapi/cli.py` - backfill-equity command
 
-**Pattern to Follow**:
-```python
-# OLD
-pipeline = dlt.pipeline(
-    destination="duckdb",
-    ...
-)
+**Changes Made**:
 
-# NEW
-pipeline = dlt.pipeline(
-    destination=dlt.destinations.filesystem(bucket_url="data"),
-    ...
-)
-info = pipeline.run(data, loader_file_format="parquet")
-```
+**Examples (Phase 1)**:
+- All 7 example files use `dlt.destinations.filesystem(bucket_url="data")`
+- All `pipeline.run()` calls include `loader_file_format="parquet"`
+- All readers point to `"data"` directory instead of DuckDB files
 
-**Files to Modify**:
-- `examples/*.py` (8 files)
-- `src/dlt_ibapi/cli.py` (1 file)
+**CLI Commands**:
+- `snapshot` command (line 333):
+  - Pipeline destination: filesystem
+  - Reader: `OptionChainSnapshotReader("data", dataset)`
+  - Added loader_file_format parameter
+
+- `backfill-option` command (line 456):
+  - Pipeline destination: filesystem
+  - database_path: "data"
+  - Added loader_file_format parameter
+  - Success message shows data location
+
+- `backfill-equity` command (line 525):
+  - Pipeline destination: filesystem
+  - database_path: "data"
+  - Reader: `EquityBarsReader("data", dataset)`
+  - Added loader_file_format parameter
+  - Success message shows data location
+
+**Files Modified**:
+- `examples/*.py` (7 files) - Phase 1
+- `src/dlt_ibapi/cli.py` (3 commands updated)
 
 ---
 
@@ -280,6 +293,19 @@ None yet
 ---
 
 ## Notes & Decisions
+
+### 2025-10-20 22:00: Phase 4 Complete - CLI Updates for Parquet
+- Updated all 3 CLI commands in `src/dlt_ibapi/cli.py`:
+  - `snapshot` command: filesystem destination + Parquet loader
+  - `backfill-option` command: filesystem destination + database_path="data"
+  - `backfill-equity` command: filesystem destination + database_path="data"
+- All CLI commands now:
+  - Use `dlt.destinations.filesystem(bucket_url="data")`
+  - Include `loader_file_format="parquet"` in pipeline.run()
+  - Use `database_path="data"` for backfill resources
+  - Display data location after successful completion
+- Phase 4: 100% complete (0.3 hours)
+- Overall progress: 60%
 
 ### 2025-10-20 21:30: Phase 3 Complete - DLT Resources for Partitioning
 - Updated `normalize_bar_data()` to extract date from timestamp for partitioning
