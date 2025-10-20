@@ -1,7 +1,7 @@
 # Parquet Migration - Implementation Status
 
-**Last Updated**: 2025-10-20 20:15
-**Overall Progress**: 20%
+**Last Updated**: 2025-10-20 21:00
+**Overall Progress**: 35%
 
 ---
 
@@ -10,13 +10,13 @@
 | Phase | Status | Progress | Est. Hours | Actual Hours |
 |-------|--------|----------|------------|--------------|
 | Phase 1: DLT Config | ✅ Complete | 100% | 1-2 | 1.2 |
-| Phase 2: Hybrid Readers | ⚪ Not Started | 0% | 3-4 | - |
+| Phase 2: Hybrid Readers | ✅ Complete | 100% | 3-4 | 2.5 |
 | Phase 3: Resource Updates | ⚪ Not Started | 0% | 2-3 | - |
 | Phase 4: Examples/CLI | ⚪ Not Started | 0% | 1-2 | - |
 | Phase 5: Tests | ⚪ Not Started | 0% | 2-3 | - |
 | Phase 6: Documentation | ⚪ Not Started | 0% | 1 | - |
 | Phase 7: Final Config | ⚪ Not Started | 0% | 0.5 | - |
-| **TOTAL** | 🟡 **In Progress** | **20%** | **11-16** | **1.2** |
+| **TOTAL** | 🟡 **In Progress** | **35%** | **11-16** | **3.7** |
 
 **Legend**: ✅ Complete | 🟡 In Progress | ⚪ Not Started
 
@@ -63,39 +63,44 @@
 
 ---
 
-### Phase 2: Create Hybrid Reader Repositories ⚪
+### Phase 2: Create Hybrid Reader Repositories ✅
 
-**Status**: Not Started
-**Estimated Start**: TBD
+**Status**: Complete (100% complete)
+**Started**: 2025-10-20
+**Completed**: 2025-10-20
 
-#### Tasks
-- [ ] Create `src/dlt_ibapi/repositories/parquet_reader.py`
-  - [ ] `ParquetReaderBase` class with hybrid query routing
-  - [ ] `query_with_duckdb()` method for small queries
-  - [ ] `query_with_pyarrow()` method for large queries
-  - [ ] `_use_duckdb_query()` decision logic
+#### Completed Tasks ✅
+- [x] Created `src/dlt_ibapi/repositories/parquet_reader.py` (~300 lines)
+  - [x] `ParquetReaderBase` class with hybrid query routing
+  - [x] `_query_with_duckdb()` method for small queries (metadata, aggregations)
+  - [x] `_query_with_pyarrow()` method for large queries (scans with predicate pushdown)
+  - [x] `_should_use_duckdb()` decision logic (overridable by subclasses)
+  - [x] `get_present_dates()` for gap detection using DuckDB
+  - [x] `load()` with flexible routing
+  - [x] `count()` using DuckDB aggregation
 
-- [ ] Update `src/dlt_ibapi/repositories/equity_bars.py`
-  - [ ] Inherit from `ParquetReaderBase`
-  - [ ] Implement `get_bars()` using PyArrow
-  - [ ] Implement `get_present_dates_for_symbol()` using DuckDB
+- [x] Updated `src/dlt_ibapi/repositories/equity_bars.py`
+  - [x] Changed base class from `BaseReader` to `ParquetReaderBase`
+  - [x] `get_bars()` now uses PyArrow by default with predicate pushdown
+  - [x] All metadata methods use DuckDB (get_date_range, get_available_symbols, get_symbols_summary)
 
-- [ ] Update `src/dlt_ibapi/repositories/option_bars.py`
-  - [ ] Inherit from `ParquetReaderBase`
-  - [ ] Implement `get_bars()` using PyArrow
-  - [ ] Implement `get_present_dates_for_contract()` using DuckDB
+- [x] Updated `src/dlt_ibapi/repositories/option_bars.py`
+  - [x] Changed base class to `ParquetReaderBase`
+  - [x] `get_bars()` uses PyArrow by default
+  - [x] All metadata methods use DuckDB (get_contracts_for_underlying, get_available_expirations)
 
-- [ ] Update `src/dlt_ibapi/repositories/option_chain.py`
-  - [ ] Inherit from `ParquetReaderBase`
-  - [ ] Implement queries using DuckDB (snapshots are small)
-  - [ ] Handle denormalized expirations/strikes arrays
+- [x] Updated `src/dlt_ibapi/repositories/option_chain.py`
+  - [x] Changed base class to `ParquetReaderBase`
+  - [x] Added `_should_use_duckdb()` override (always True for snapshots)
+  - [x] All queries use DuckDB (snapshots are small)
+  - [x] Updated table references to remove dataset prefix
 
-**Files to Create/Modify**:
-- `src/dlt_ibapi/repositories/parquet_reader.py` (new, ~300 lines)
-- `src/dlt_ibapi/repositories/equity_bars.py` (modify ~50 lines)
-- `src/dlt_ibapi/repositories/option_bars.py` (modify ~50 lines)
-- `src/dlt_ibapi/repositories/option_chain.py` (modify ~50 lines)
-- `src/dlt_ibapi/repositories/base.py` (modify ~100 lines)
+**Files Modified**:
+- `src/dlt_ibapi/repositories/parquet_reader.py` (created, ~300 lines)
+- `src/dlt_ibapi/repositories/equity_bars.py` (updated, ~100 line changes)
+- `src/dlt_ibapi/repositories/option_bars.py` (updated, ~100 line changes)
+- `src/dlt_ibapi/repositories/option_chain.py` (updated, ~30 line changes)
+- `src/dlt_ibapi/repositories/__init__.py` (updated exports)
 
 ---
 
@@ -250,6 +255,22 @@ None yet
 ---
 
 ## Notes & Decisions
+
+### 2025-10-20 21:00: Phase 2 Complete - Hybrid Parquet Readers
+- Created `ParquetReaderBase` with intelligent query routing:
+  - DuckDB in-memory for: metadata queries, aggregations, small datasets
+  - PyArrow for: large table scans with predicate pushdown on partitions
+- Updated all 3 reader repositories:
+  - `EquityBarsReader`: PyArrow for get_bars(), DuckDB for metadata
+  - `OptionBarsReader`: PyArrow for get_bars(), DuckDB for metadata
+  - `OptionChainSnapshotReader`: DuckDB for everything (snapshots are small)
+- Key features:
+  - Hive partitioning support (date/symbol)
+  - Predicate pushdown filters on partition columns
+  - No persistent database needed for DuckDB queries
+  - Backward compatible API
+- Phase 2: 100% complete
+- Overall progress: 35%
 
 ### 2025-10-20 20:15: Phase 1 Complete - All Examples Updated
 - Completed all example file updates for filesystem destination
