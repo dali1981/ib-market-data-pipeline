@@ -329,10 +329,10 @@ def snapshot(
         # Get connection config
         conn_config = get_connection_config(config_file)
 
-        # Create pipeline
+        # Create pipeline with filesystem destination (Parquet)
         pipeline = dlt.pipeline(
             pipeline_name=database.replace(".duckdb", ""),
-            destination="duckdb",
+            destination=dlt.destinations.filesystem(bucket_url="data"),
             dataset_name=dataset,
         )
 
@@ -346,7 +346,7 @@ def snapshot(
                 max_dte=max_dte,
             )
 
-            info = pipeline.run(data, write_disposition="replace")
+            info = pipeline.run(data, write_disposition="replace", loader_file_format="parquet")
 
         if info.has_failed_jobs:
             console.print("[red]✗[/red] Snapshot capture failed!")
@@ -354,8 +354,8 @@ def snapshot(
 
         console.print("[green]✓[/green] Snapshot captured successfully!")
 
-        # Query and display results
-        reader = OptionChainSnapshotReader(database, dataset)
+        # Query and display results (reader uses Parquet directory)
+        reader = OptionChainSnapshotReader("data", dataset)
         chain = reader.get_chain_for_date(symbol, snap_date, min_dte, max_dte)
 
         if not chain.empty:
@@ -452,10 +452,10 @@ def backfill_options(
             max_dte=max_dte,
         )
 
-        # Create pipeline
+        # Create pipeline with filesystem destination (Parquet)
         pipeline = dlt.pipeline(
             pipeline_name=database.replace(".duckdb", ""),
-            destination="duckdb",
+            destination=dlt.destinations.filesystem(bucket_url="data"),
             dataset_name=dataset,
         )
 
@@ -464,19 +464,20 @@ def backfill_options(
             data = backfill_option_bars(
                 underlying=symbol,
                 spot_price=spot_price,
-                database_path=database,
+                database_path="data",  # Point to Parquet directory
                 dataset_name=dataset,
                 connection_config=conn_config,
                 backfill_config=config,
             )
 
-            info = pipeline.run(data, write_disposition="append")
+            info = pipeline.run(data, write_disposition="append", loader_file_format="parquet")
 
         if info.has_failed_jobs:
             console.print("[red]✗[/red] Backfill failed!")
             raise typer.Exit(1)
 
         console.print("[green]✓[/green] Backfill completed successfully!")
+        console.print(f"[cyan]Data saved to:[/cyan] ./data/{dataset}/")
 
     except Exception as e:
         console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
@@ -521,10 +522,10 @@ def backfill_equity(
         # Get connection config
         conn_config = get_connection_config(config_file)
 
-        # Create pipeline
+        # Create pipeline with filesystem destination (Parquet)
         pipeline = dlt.pipeline(
             pipeline_name=database.replace(".duckdb", ""),
-            destination="duckdb",
+            destination=dlt.destinations.filesystem(bucket_url="data"),
             dataset_name=dataset,
         )
 
@@ -532,7 +533,7 @@ def backfill_equity(
         with console.status("[bold green]Running backfill..."):
             data = equity_bars_backfill_source(
                 symbols=symbols,
-                database_path=database,
+                database_path="data",  # Point to Parquet directory
                 dataset_name=dataset,
                 connection_config=conn_config,
                 start_date=start_date,
@@ -540,17 +541,18 @@ def backfill_equity(
                 bar_size=bar_size,
             )
 
-            info = pipeline.run(data, write_disposition="append")
+            info = pipeline.run(data, write_disposition="append", loader_file_format="parquet")
 
         if info.has_failed_jobs:
             console.print("[red]✗[/red] Backfill failed!")
             raise typer.Exit(1)
 
         console.print("[green]✓[/green] Backfill completed successfully!")
+        console.print(f"[cyan]Data saved to:[/cyan] ./data/{dataset}/")
 
         # Display summary
         from .repositories import EquityBarsReader
-        reader = EquityBarsReader(database, dataset)
+        reader = EquityBarsReader("data", dataset)
         summary = reader.get_symbols_summary(bar_size=bar_size)
 
         if not summary.empty:
