@@ -14,8 +14,22 @@ Before running:
 """
 
 import dlt
+import logging
 from dlt_ibapi import ib_historical_bars
 from dlt_ibapi.config_loader import get_connection_config, get_historical_config
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
+
+# Suppress noisy IB API logs
+logging.getLogger('ibapi').setLevel(logging.WARNING)
+logging.getLogger('ibx').setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -25,8 +39,9 @@ def main():
     connection_config = get_connection_config()
     hist_config = get_historical_config()
 
-    print(f"Using connection: {connection_config.host}:{connection_config.port}")
-    print(f"Bar size: {hist_config.bar_size}, Duration: {hist_config.duration}")
+    logger.info(f"Configuration loaded:")
+    logger.info(f"  Connection: {connection_config.host}:{connection_config.port}")
+    logger.info(f"  Bar size: {hist_config.bar_size}, Duration: {hist_config.duration}")
 
     # Create pipeline to DuckDB
     pipeline = dlt.pipeline(
@@ -34,9 +49,10 @@ def main():
         destination="duckdb",
         dataset_name="stocks",
     )
+    logger.info(f"Pipeline created: {pipeline.pipeline_name} -> {pipeline.dataset_name}")
 
     # Fetch AAPL data
-    print("\nFetching AAPL historical data...")
+    logger.info("Fetching AAPL historical data from IB...")
     data = ib_historical_bars(
         symbol="AAPL",
         exchange="SMART",
@@ -46,11 +62,57 @@ def main():
     )
 
     # Run pipeline
+    logger.info("Running DLT pipeline...")
     info = pipeline.run(data)
 
-    print(f"\n✓ Pipeline finished!")
-    print(f"Dataset: {pipeline.dataset_name}")
-    print(f"Tables: {list(pipeline.default_schema.tables.keys())}")
+    logger.info("Pipeline finished!")
+
+    # Show what was loaded
+    if info.has_failed_jobs:
+        logger.error("Pipeline had failures:")
+        for load_package in info.load_packages:
+            for job in load_package.jobs['failed_jobs']:
+                logger.error(f"  Failed: {job.file_path}: {job.failed_message}")
+    else:
+        logger.info("All jobs completed successfully")
+
+        # Get row counts
+        for load_package in info.load_packages:
+            for job in load_package.jobs['completed_jobs']:
+                if 'historical_bars' in job.file_path:
+                    logger.info(f"  Loaded table: historical_bars")
+
+    # Query to show results
+    import duckdb
+    conn = duckdb.connect(f"{pipeline.pipeline_name}.duckdb")
+
+    result = conn.execute("""
+        SELECT COUNT(*) as row_count
+        FROM stocks.historical_bars
+    """).fetchone()
+
+    logger.info(f"Total rows in database: {result[0]}")
+
+    if result[0] > 0:
+        sample = conn.execute("""
+            SELECT timestamp, open, high, low, close, volume
+            FROM stocks.historical_bars
+            ORDER BY timestamp DESC
+            LIMIT 5
+        """).fetchall()
+
+        print("\n" + "="*80)
+        print("📈 Latest 5 bars from database:")
+        print("="*80)
+        print(f"{'Timestamp':<25} {'Open':>10} {'High':>10} {'Low':>10} {'Close':>10} {'Volume':>12}")
+        print("-" * 80)
+        for row in sample:
+            print(f"{str(row[0]):<25} {row[1]:>10.2f} {row[2]:>10.2f} {row[3]:>10.2f} {row[4]:>10.2f} {row[5]:>12,}")
+        print("="*80 + "\n")
+    else:
+        logger.warning("No data was loaded!")
+
+    conn.close()
 
 
 def main_simple():

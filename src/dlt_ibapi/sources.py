@@ -79,6 +79,9 @@ def ib_historical_bars(
     Yields:
         Normalized bar data records
     """
+    import logging
+    log = logging.getLogger("dlt_ibapi.historical_bars")
+
     runtime = _get_runtime(connection_config)
     hist_cfg = hist_config if hist_config is not None else get_historical_config()
 
@@ -91,6 +94,12 @@ def ib_historical_bars(
 
         end_datetime = end_date or ""
 
+        log.info(
+            f"Fetching historical bars for {symbol}: "
+            f"duration={hist_cfg.duration}, bar_size={hist_cfg.bar_size}, "
+            f"what_to_show={hist_cfg.what_to_show}"
+        )
+
         bars = hist_svc.bars(
             contract=contract,
             endDateTime=end_datetime,
@@ -101,8 +110,12 @@ def ib_historical_bars(
             timeout=hist_cfg.timeout,
         )
 
+        bar_count = 0
         for bar in bars:
             yield normalize_bar_data(bar, symbol, exchange, currency)
+            bar_count += 1
+
+        log.info(f"Fetched {bar_count} bars for {symbol}")
 
     finally:
         runtime.stop()
