@@ -17,6 +17,8 @@ from .backfill import (
     option_chain_snapshots_source,
     backfill_option_bars,
     option_bars_backfill_source,
+    backfill_equity_bars,
+    equity_bars_backfill_source,
 )
 
 __version__ = "0.1.0"
@@ -33,4 +35,6 @@ __all__ = [
     "option_chain_snapshots_source",
     "backfill_option_bars",
     "option_bars_backfill_source",
+    "backfill_equity_bars",
+    "equity_bars_backfill_source",
 ]

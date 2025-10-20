@@ -25,6 +25,8 @@ from .config_loader import (
     get_package_config_path,
 )
 from .sources import ib_historical_bars, ib_contract_details
+from datetime import date, datetime, timedelta
+import dlt
 
 app = typer.Typer(
     name="dlt-ibapi",
@@ -281,6 +283,412 @@ def fetch(
             if all_data:
                 console.print("\n[cyan]Sample record:[/cyan]")
                 rprint(all_data[0])
+
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def snapshot(
+    symbol: str = typer.Argument(..., help="Underlying symbol (e.g., AAPL)"),
+    snapshot_date: Optional[str] = typer.Option(
+        None, "--date", "-d", help="Snapshot date (YYYY-MM-DD, default: today)"
+    ),
+    min_dte: int = typer.Option(7, "--min-dte", help="Minimum days to expiration"),
+    max_dte: int = typer.Option(365, "--max-dte", help="Maximum days to expiration"),
+    database: str = typer.Option(
+        "ib_snapshots.duckdb", "--database", "--db", help="Database path"
+    ),
+    dataset: str = typer.Option("options", "--dataset", help="Dataset name"),
+    config_file: Optional[Path] = typer.Option(
+        None, "--config", "-c", help="Path to config file"
+    ),
+):
+    """
+    Capture option chain snapshot for a symbol.
+
+    Example:
+        dlt-ibapi snapshot AAPL --min-dte 7 --max-dte 60
+    """
+    from .backfill import snapshot_option_chain
+    from .repositories import OptionChainSnapshotReader
+
+    console.print(f"\n[bold cyan]Capturing option chain snapshot for {symbol}[/bold cyan]\n")
+
+    # Parse date
+    snap_date = datetime.strptime(snapshot_date, "%Y-%m-%d").date() if snapshot_date else date.today()
+
+    console.print(f"Symbol:        {symbol}")
+    console.print(f"Date:          {snap_date}")
+    console.print(f"DTE range:     {min_dte} to {max_dte}")
+    console.print(f"Database:      {database}")
+    console.print(f"Dataset:       {dataset}\n")
+
+    try:
+        # Get connection config
+        conn_config = get_connection_config(config_file)
+
+        # Create pipeline
+        pipeline = dlt.pipeline(
+            pipeline_name=database.replace(".duckdb", ""),
+            destination="duckdb",
+            dataset_name=dataset,
+        )
+
+        # Capture snapshot
+        with console.status("[bold green]Capturing snapshot..."):
+            data = snapshot_option_chain(
+                underlying=symbol,
+                snapshot_date=snap_date,
+                connection_config=conn_config,
+                min_dte=min_dte,
+                max_dte=max_dte,
+            )
+
+            info = pipeline.run(data, write_disposition="replace")
+
+        if info.has_failed_jobs:
+            console.print("[red]✗[/red] Snapshot capture failed!")
+            raise typer.Exit(1)
+
+        console.print("[green]✓[/green] Snapshot captured successfully!")
+
+        # Query and display results
+        reader = OptionChainSnapshotReader(database, dataset)
+        chain = reader.get_chain_for_date(symbol, snap_date, min_dte, max_dte)
+
+        if not chain.empty:
+            total_exp = sum(chain['expiration_count'])
+            total_strikes = sum(chain['strike_count'])
+
+            table = Table(title=f"Option Chain Snapshot: {symbol} ({snap_date})")
+            table.add_column("Exchange", style="cyan")
+            table.add_column("Trading Class", style="cyan")
+            table.add_column("Expirations", justify="right")
+            table.add_column("Strikes", justify="right")
+
+            for _, row in chain.iterrows():
+                table.add_row(
+                    row['exchange'],
+                    row['trading_class'],
+                    str(row['expiration_count']),
+                    str(row['strike_count'])
+                )
+
+            console.print(table)
+            console.print(f"\n[green]Total:[/green] {total_exp} expirations, {total_strikes} strikes")
+
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def backfill_options(
+    symbol: str = typer.Argument(..., help="Underlying symbol (e.g., AAPL)"),
+    spot_price: float = typer.Argument(..., help="Current spot price"),
+    start: Optional[str] = typer.Option(
+        None, "--start", help="Start date (YYYY-MM-DD, default: 30 days ago)"
+    ),
+    end: Optional[str] = typer.Option(
+        None, "--end", help="End date (YYYY-MM-DD, default: today)"
+    ),
+    bar_size: str = typer.Option("1 day", "--bar-size", "-b", help="Bar size"),
+    mode: str = typer.Option("atm", "--mode", "-m", help="Selection mode: atm, moneyness, delta, all"),
+    k_strikes: int = typer.Option(5, "--k-strikes", "-k", help="K strikes for ATM mode"),
+    min_dte: int = typer.Option(7, "--min-dte", help="Minimum days to expiration"),
+    max_dte: int = typer.Option(60, "--max-dte", help="Maximum days to expiration"),
+    database: str = typer.Option("ib_options.duckdb", "--database", "--db", help="Database path"),
+    dataset: str = typer.Option("options", "--dataset", help="Dataset name"),
+    config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
+):
+    """
+    Backfill option bars with gap detection.
+
+    Example:
+        dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
+    """
+    from .backfill import backfill_option_bars, OptionBackfillConfig, ContractSelectionMode
+
+    console.print(f"\n[bold cyan]Backfilling option bars for {symbol}[/bold cyan]\n")
+
+    # Parse dates
+    start_date = datetime.strptime(start, "%Y-%m-%d").date() if start else date.today() - timedelta(days=30)
+    end_date = datetime.strptime(end, "%Y-%m-%d").date() if end else date.today()
+
+    # Parse selection mode
+    mode_map = {
+        "atm": ContractSelectionMode.K_AROUND_ATM,
+        "moneyness": ContractSelectionMode.MONEYNESS,
+        "delta": ContractSelectionMode.DELTA,
+        "all": ContractSelectionMode.ALL,
+    }
+
+    if mode not in mode_map:
+        console.print(f"[red]✗[/red] Invalid mode: {mode}. Choose from: atm, moneyness, delta, all")
+        raise typer.Exit(1)
+
+    console.print(f"Symbol:        {symbol} @ ${spot_price}")
+    console.print(f"Date range:    {start_date} to {end_date}")
+    console.print(f"Bar size:      {bar_size}")
+    console.print(f"Selection:     {mode}")
+    console.print(f"DTE range:     {min_dte} to {max_dte}")
+    console.print(f"Database:      {database}")
+    console.print(f"Dataset:       {dataset}\n")
+
+    try:
+        # Get connection config
+        conn_config = get_connection_config(config_file)
+
+        # Create backfill config
+        config = OptionBackfillConfig(
+            start_date=start_date,
+            end_date=end_date,
+            bar_size=bar_size,
+            selection_mode=mode_map[mode],
+            k_strikes=k_strikes,
+            min_dte=min_dte,
+            max_dte=max_dte,
+        )
+
+        # Create pipeline
+        pipeline = dlt.pipeline(
+            pipeline_name=database.replace(".duckdb", ""),
+            destination="duckdb",
+            dataset_name=dataset,
+        )
+
+        # Run backfill
+        with console.status("[bold green]Running backfill..."):
+            data = backfill_option_bars(
+                underlying=symbol,
+                spot_price=spot_price,
+                database_path=database,
+                dataset_name=dataset,
+                connection_config=conn_config,
+                backfill_config=config,
+            )
+
+            info = pipeline.run(data, write_disposition="append")
+
+        if info.has_failed_jobs:
+            console.print("[red]✗[/red] Backfill failed!")
+            raise typer.Exit(1)
+
+        console.print("[green]✓[/green] Backfill completed successfully!")
+
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def backfill_equity(
+    symbols: List[str] = typer.Argument(..., help="Stock symbols to backfill"),
+    start: Optional[str] = typer.Option(
+        None, "--start", help="Start date (YYYY-MM-DD, default: 30 days ago)"
+    ),
+    end: Optional[str] = typer.Option(
+        None, "--end", help="End date (YYYY-MM-DD, default: today)"
+    ),
+    bar_size: str = typer.Option("1 day", "--bar-size", "-b", help="Bar size"),
+    database: str = typer.Option("ib_stocks.duckdb", "--database", "--db", help="Database path"),
+    dataset: str = typer.Option("stocks", "--dataset", help="Dataset name"),
+    config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
+):
+    """
+    Backfill equity bars with gap detection.
+
+    Example:
+        dlt-ibapi backfill-equity AAPL MSFT GOOGL --bar-size "1 day"
+    """
+    from .backfill import equity_bars_backfill_source
+
+    console.print(f"\n[bold cyan]Backfilling equity bars for {len(symbols)} symbols[/bold cyan]\n")
+
+    # Parse dates
+    start_date = datetime.strptime(start, "%Y-%m-%d").date() if start else date.today() - timedelta(days=30)
+    end_date = datetime.strptime(end, "%Y-%m-%d").date() if end else date.today()
+
+    console.print(f"Symbols:       {', '.join(symbols)}")
+    console.print(f"Date range:    {start_date} to {end_date}")
+    console.print(f"Bar size:      {bar_size}")
+    console.print(f"Database:      {database}")
+    console.print(f"Dataset:       {dataset}\n")
+
+    try:
+        # Get connection config
+        conn_config = get_connection_config(config_file)
+
+        # Create pipeline
+        pipeline = dlt.pipeline(
+            pipeline_name=database.replace(".duckdb", ""),
+            destination="duckdb",
+            dataset_name=dataset,
+        )
+
+        # Run backfill
+        with console.status("[bold green]Running backfill..."):
+            data = equity_bars_backfill_source(
+                symbols=symbols,
+                database_path=database,
+                dataset_name=dataset,
+                connection_config=conn_config,
+                start_date=start_date,
+                end_date=end_date,
+                bar_size=bar_size,
+            )
+
+            info = pipeline.run(data, write_disposition="append")
+
+        if info.has_failed_jobs:
+            console.print("[red]✗[/red] Backfill failed!")
+            raise typer.Exit(1)
+
+        console.print("[green]✓[/green] Backfill completed successfully!")
+
+        # Display summary
+        from .repositories import EquityBarsReader
+        reader = EquityBarsReader(database, dataset)
+        summary = reader.get_symbols_summary(bar_size=bar_size)
+
+        if not summary.empty:
+            table = Table(title="Backfill Summary")
+            table.add_column("Symbol", style="cyan")
+            table.add_column("Bar Count", justify="right")
+            table.add_column("First Bar", style="dim")
+            table.add_column("Last Bar", style="dim")
+
+            for _, row in summary.iterrows():
+                table.add_row(
+                    row['symbol'],
+                    str(int(row['bar_count'])),
+                    str(row['first_bar'].date()),
+                    str(row['last_bar'].date())
+                )
+
+            console.print(table)
+
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def list_snapshots(
+    symbol: Optional[str] = typer.Argument(None, help="Symbol to list snapshots for"),
+    database: str = typer.Option("ib_snapshots.duckdb", "--database", "--db", help="Database path"),
+    dataset: str = typer.Option("options", "--dataset", help="Dataset name"),
+):
+    """
+    List available option chain snapshots.
+
+    Example:
+        dlt-ibapi list-snapshots AAPL
+        dlt-ibapi list-snapshots  # List all
+    """
+    from .repositories import OptionChainSnapshotReader
+
+    console.print(f"\n[bold cyan]Available Option Chain Snapshots[/bold cyan]\n")
+
+    try:
+        reader = OptionChainSnapshotReader(database, dataset)
+
+        if symbol:
+            # List snapshots for specific symbol
+            snapshots = reader.get_available_snapshots(symbol)
+
+            if not snapshots:
+                console.print(f"No snapshots found for {symbol}")
+                return
+
+            console.print(f"[green]{symbol}[/green] ({len(snapshots)} snapshots):")
+            for snap_date in sorted(snapshots):
+                console.print(f"  - {snap_date}")
+
+        else:
+            # List all snapshots
+            all_data = reader.load(columns=["underlying", "as_of"])
+            if all_data.empty:
+                console.print("No snapshots found")
+                return
+
+            by_symbol = all_data.groupby("underlying")["as_of"].apply(list).to_dict()
+
+            for sym, dates in sorted(by_symbol.items()):
+                console.print(f"[green]{sym}[/green] ({len(dates)} snapshots):")
+                for snap_date in sorted(dates)[:5]:  # Show first 5
+                    console.print(f"  - {snap_date}")
+                if len(dates) > 5:
+                    console.print(f"  ... and {len(dates) - 5} more")
+
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def stats(
+    database: str = typer.Argument(..., help="Database path"),
+    dataset: str = typer.Option("options", "--dataset", help="Dataset name"),
+):
+    """
+    Show database statistics (table sizes, date ranges, contract counts).
+
+    Example:
+        dlt-ibapi stats ib_options.duckdb --dataset options
+    """
+    import duckdb
+
+    console.print(f"\n[bold cyan]Database Statistics[/bold cyan]\n")
+    console.print(f"Database: {database}")
+    console.print(f"Dataset:  {dataset}\n")
+
+    try:
+        conn = duckdb.connect(database, read_only=True)
+
+        # Get all tables
+        tables_df = conn.execute(f"""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = '{dataset}'
+        """).df()
+
+        if tables_df.empty:
+            console.print(f"No tables found in dataset '{dataset}'")
+            return
+
+        for table_name in tables_df['table_name']:
+            full_table = f"{dataset}.{table_name}"
+
+            # Get row count
+            count_df = conn.execute(f"SELECT COUNT(*) as count FROM {full_table}").df()
+            row_count = int(count_df.iloc[0]['count'])
+
+            # Get date range if table has time column
+            try:
+                date_range_df = conn.execute(f"""
+                    SELECT
+                        MIN(DATE(time)) as min_date,
+                        MAX(DATE(time)) as max_date
+                    FROM {full_table}
+                """).df()
+
+                if not date_range_df.empty and not date_range_df.iloc[0].isnull().all():
+                    min_date = date_range_df.iloc[0]['min_date']
+                    max_date = date_range_df.iloc[0]['max_date']
+                    date_info = f"{min_date} to {max_date}"
+                else:
+                    date_info = "N/A"
+            except:
+                date_info = "N/A"
+
+            console.print(f"[green]{table_name}[/green]")
+            console.print(f"  Rows: {row_count:,}")
+            console.print(f"  Date range: {date_info}\n")
+
+        conn.close()
 
     except Exception as e:
         console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")

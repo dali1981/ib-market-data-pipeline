@@ -15,8 +15,9 @@ from dlt_ibapi.resolution import ContractCache, ContractResolver
 from dlt_ibapi.backfill.config import OptionChainSnapshotConfig, OptionBackfillConfig
 from dlt_ibapi.backfill.gap_detection import missing_windows
 from dlt_ibapi.backfill.contract_selection import filter_contracts_by_selection_mode
-from dlt_ibapi.repositories import OptionChainSnapshotReader, OptionBarsReader
+from dlt_ibapi.repositories import OptionChainSnapshotReader, OptionBarsReader, EquityBarsReader
 from dlt_ibapi.transformers import normalize_bar_data
+from ib_connector import make_stock
 
 
 def _get_runtime(config: Optional[IBConnectionConfig] = None) -> IBRuntime:
@@ -409,3 +410,202 @@ def option_bars_backfill_source(
             backfill_config=backfill_config,
         )
     ]
+
+
+@dlt.resource(
+    name="equity_bars_backfill",
+    write_disposition="append",
+    primary_key=["symbol", "bar_size", "time"],
+)
+def backfill_equity_bars(
+    symbol: str,
+    database_path: str,
+    dataset_name: str = "stocks",
+    cache_path: str = ".dlt-ibapi/cache",
+    connection_config: Optional[IBConnectionConfig] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    bar_size: str = "1 day",
+    what_to_show: str = "TRADES",
+    use_rth: bool = True,
+) -> Iterator[dict]:
+    """
+    DLT resource for backfilling historical equity bars with gap detection.
+
+    Workflow:
+    1. Resolve symbol to IB Contract
+    2. Detect gaps in existing data using EquityBarsReader
+    3. Fetch missing bars from IB API for each gap
+    4. Yield normalized bar data to DLT
+
+    Write disposition: append (deduplicates via primary key)
+    Primary key: [symbol, bar_size, time]
+
+    Args:
+        symbol: Stock symbol (e.g., "AAPL")
+        database_path: Path to DLT database (for gap detection)
+        dataset_name: DLT dataset name
+        cache_path: Path to contract cache
+        connection_config: IB connection config (auto-loads if None)
+        start_date: Backfill start date (default: 30 days ago)
+        end_date: Backfill end date (default: today)
+        bar_size: IB bar size (e.g., "1 min", "1 hour", "1 day")
+        what_to_show: Data type ("TRADES", "MIDPOINT", "BID", "ASK")
+        use_rth: Regular trading hours only
+
+    Yields:
+        Normalized equity bar records
+    """
+    import logging
+    log = logging.getLogger("dlt_ibapi.backfill_equity_bars")
+
+    # Default date range
+    if start_date is None:
+        start_date = date.today() - timedelta(days=30)
+    if end_date is None:
+        end_date = date.today()
+
+    runtime = _get_runtime(connection_config)
+    cache = ContractCache(cache_path)
+    resolver = ContractResolver(runtime, cache)
+
+    # Reader for gap detection
+    bars_reader = EquityBarsReader(database_path, dataset_name)
+
+    try:
+        # Step 1: Resolve symbol to IB Contract
+        log.info(f"Resolving contract for {symbol}")
+        contract_info = resolver.resolve_symbol(
+            symbol=symbol,
+            exchange="SMART",
+            currency="USD",
+            sec_type="STK",
+        )
+
+        if not contract_info:
+            log.error(f"Could not resolve contract for {symbol}")
+            return
+
+        log.info(f"Resolved {symbol} to conid={contract_info['conid']}")
+
+        # Step 2: Gap detection - find missing dates
+        log.info(f"Checking coverage for {symbol} from {start_date} to {end_date}")
+
+        present_dates = bars_reader.get_present_dates_for_symbol(
+            symbol=symbol,
+            bar_size=bar_size,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        gaps = missing_windows(
+            present_dates=present_dates,
+            start=start_date,
+            end=end_date,
+        )
+
+        if not gaps:
+            log.info(f"No gaps found for {symbol}, data complete")
+            return
+
+        log.info(f"Found {len(gaps)} gaps to fill for {symbol}")
+
+        # Step 3: Fetch bars for each gap
+        hist_svc = HistoricalService(runtime)
+
+        for gap_idx, (gap_start, gap_end) in enumerate(gaps, 1):
+            log.info(
+                f"[Gap {gap_idx}/{len(gaps)}] Fetching {symbol} bars "
+                f"from {gap_start} to {gap_end}"
+            )
+
+            # Create stock contract
+            contract = make_stock(
+                symbol=symbol,
+                exchange="SMART",
+                currency="USD",
+            )
+
+            # Fetch historical bars
+            try:
+                bars = hist_svc.bars(
+                    contract=contract,
+                    endDateTime=gap_end.strftime("%Y%m%d 23:59:59"),
+                    durationStr=f"{(gap_end - gap_start).days + 1} D",
+                    barSizeSetting=bar_size,
+                    whatToShow=what_to_show,
+                    useRTH=1 if use_rth else 0,
+                    timeout=30.0,
+                )
+
+                bar_count = 0
+                for bar in bars:
+                    # Normalize and add symbol + bar_size
+                    record = normalize_bar_data(bar, symbol, "SMART", "USD")
+                    record.update({
+                        "symbol": symbol.upper(),
+                        "bar_size": bar_size,
+                    })
+
+                    yield record
+                    bar_count += 1
+
+                log.info(f"Yielded {bar_count} bars for gap {gap_start} to {gap_end}")
+
+            except Exception as e:
+                log.error(f"Failed to fetch bars for {gap_start} to {gap_end}: {e}")
+                continue
+
+    finally:
+        runtime.stop()
+
+
+@dlt.source(name="equity_bars_backfill_source")
+def equity_bars_backfill_source(
+    symbols: List[str],
+    database_path: str,
+    dataset_name: str = "stocks",
+    cache_path: str = ".dlt-ibapi/cache",
+    connection_config: Optional[IBConnectionConfig] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    bar_size: str = "1 day",
+    what_to_show: str = "TRADES",
+    use_rth: bool = True,
+) -> List:
+    """
+    DLT source for backfilling multiple equity symbols.
+
+    Args:
+        symbols: List of stock symbols
+        database_path: Path to DLT database
+        dataset_name: DLT dataset name
+        cache_path: Path to contract cache
+        connection_config: IB connection config
+        start_date: Backfill start date
+        end_date: Backfill end date
+        bar_size: IB bar size
+        what_to_show: Data type
+        use_rth: Regular trading hours only
+
+    Returns:
+        List of backfill_equity_bars resources
+    """
+    resources = []
+    for symbol in symbols:
+        resources.append(
+            backfill_equity_bars(
+                symbol=symbol,
+                database_path=database_path,
+                dataset_name=dataset_name,
+                cache_path=cache_path,
+                connection_config=connection_config,
+                start_date=start_date,
+                end_date=end_date,
+                bar_size=bar_size,
+                what_to_show=what_to_show,
+                use_rth=use_rth,
+            )
+        )
+
+    return resources

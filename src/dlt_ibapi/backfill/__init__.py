@@ -12,6 +12,8 @@ from .resources import (
     option_chain_snapshots_source,
     backfill_option_bars,
     option_bars_backfill_source,
+    backfill_equity_bars,
+    equity_bars_backfill_source,
 )
 from .contract_selection import (
     select_k_around_atm,
@@ -31,6 +33,8 @@ __all__ = [
     "option_chain_snapshots_source",
     "backfill_option_bars",
     "option_bars_backfill_source",
+    "backfill_equity_bars",
+    "equity_bars_backfill_source",
     "select_k_around_atm",
     "select_by_moneyness",
     "select_by_delta",
