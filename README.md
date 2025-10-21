@@ -8,12 +8,14 @@ DLT connector for Interactive Brokers - ingest market data from IB Gateway/TWS i
 - [Installation](#installation)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
+- [Data Storage](#data-storage)
 - [Historical Data Backfilling](#historical-data-backfilling)
 - [Configuration](#configuration)
   - [YAML Configuration](#method-1-yaml-configuration-recommended)
   - [Environment Variables](#method-2-environment-variables)
   - [Python Configuration](#method-3-python-configuration-pydantic-models)
   - [CLI Commands](#method-4-cli-commands)
+- [Notebooks](#notebooks)
 - [API Reference](#api-reference)
 - [Data Schema](#data-schema)
 - [Working with Loaded Data](#working-with-loaded-data)
@@ -426,6 +428,38 @@ For comprehensive documentation:
 - **User Guide**: [docs/BACKFILL_GUIDE.md](docs/BACKFILL_GUIDE.md) - Complete backfill workflows
 - **API Reference**: [docs/API_REFERENCE.md](docs/API_REFERENCE.md) - Full API documentation
 - **Examples**: [examples/](examples/) - Working code samples
+- **Notebooks**: [notebooks/](notebooks/) - Interactive Jupyter notebooks
+
+## Notebooks
+
+Interactive Jupyter notebooks for learning and exploration:
+
+### [01_quickstart.ipynb](notebooks/01_quickstart.ipynb)
+- Setting up IB Gateway connection
+- Fetching historical equity bars
+- Capturing option chain snapshots
+- Historical data backfilling with gap detection
+- Querying and visualizing data
+
+### [02_reading_data.ipynb](notebooks/02_reading_data.ipynb)
+- Understanding Parquet file structure
+- Querying with DuckDB SQL
+- Using Reader Repositories (Python API)
+- Advanced PyArrow queries with predicate pushdown
+- Performance comparison and best practices
+
+**Get Started**:
+```bash
+# Install with notebook dependencies
+uv add jupyter matplotlib pandas
+
+# Start Jupyter
+jupyter lab
+
+# Open notebooks/01_quickstart.ipynb
+```
+
+See [notebooks/README.md](notebooks/README.md) for detailed information.
 
 ## Configuration
 
