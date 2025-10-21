@@ -67,10 +67,10 @@ After installation, the `dlt-ibapi` CLI command will be available.
 import dlt
 from dlt_ibapi import ib_historical_bars
 
-# Create a pipeline to DuckDB
+# Create a pipeline to Parquet files (recommended)
 pipeline = dlt.pipeline(
     pipeline_name="ib_market_data",
-    destination="duckdb",
+    destination=dlt.destinations.filesystem(bucket_url="data"),
     dataset_name="stocks",
 )
 
@@ -81,10 +81,23 @@ data = ib_historical_bars(
     currency="USD",
 )
 
-# Run the pipeline
-info = pipeline.run(data)
+# Run the pipeline - data saved as Parquet with Hive partitioning
+info = pipeline.run(data, loader_file_format="parquet")
 print(info)
+
+# Query the data using DuckDB
+import duckdb
+conn = duckdb.connect(":memory:")
+df = conn.execute("""
+    SELECT * FROM parquet_scan('data/stocks/**/*.parquet', hive_partitioning=true)
+    WHERE symbol = 'AAPL'
+    ORDER BY time DESC
+    LIMIT 10
+""").df()
+print(df)
 ```
+
+> **Note**: As of version 0.2.0, `dlt-ibapi` uses Parquet files with Hive-style partitioning by default for better performance and storage efficiency. Data is partitioned by date and symbol for optimized queries.
 
 ### Multiple Symbols Pipeline
 
@@ -149,6 +162,78 @@ options = ib_option_chain(
 pipeline.run(options)
 ```
 
+## Data Storage
+
+`dlt-ibapi` uses **Parquet files with Hive-style partitioning** for optimal storage and query performance.
+
+### Partitioning Strategy
+
+Data is automatically partitioned by:
+- **date**: ISO format (YYYY-MM-DD) for time-based filtering
+- **symbol**: Stock/underlying symbol for symbol-based filtering
+
+Directory structure:
+```
+data/
+├── stocks/
+│   └── equity_bars_backfill/
+│       └── date=2025-10-20/
+│           ├── symbol=AAPL/*.parquet
+│           └── symbol=MSFT/*.parquet
+└── options/
+    ├── option_bars_backfill/
+    │   └── date=2025-10-20/
+    │       └── symbol=AAPL/*.parquet
+    └── option_chain_snapshot/
+        └── date=2025-10-20/
+            └── underlying=AAPL/*.parquet
+```
+
+### Querying Parquet Data
+
+Use DuckDB for efficient querying:
+
+```python
+import duckdb
+
+# Query equity bars
+conn = duckdb.connect(":memory:")
+df = conn.execute("""
+    SELECT * FROM parquet_scan('data/stocks/**/*.parquet', hive_partitioning=true)
+    WHERE symbol = 'AAPL' AND date >= '2025-10-01'
+    ORDER BY time
+""").df()
+```
+
+**Benefits**:
+- **10x compression**: Parquet typically achieves 10x better compression than raw databases
+- **Predicate pushdown**: Only reads relevant partitions (fast filtering on date/symbol)
+- **Hybrid query support**: Small queries use DuckDB, large scans use PyArrow
+- **Cloud-ready**: Works with S3, GCS, Azure Blob Storage
+
+### Reader Repositories
+
+For convenience, use the provided readers:
+
+```python
+from dlt_ibapi.repositories import EquityBarsReader, OptionBarsReader
+
+# Initialize reader (points to Parquet directory)
+reader = EquityBarsReader("data", "stocks")
+
+# Get bars with automatic PyArrow optimization
+bars = reader.get_bars(
+    symbol="AAPL",
+    bar_size="1 day",
+    start_date=date(2025, 10, 1),
+    end_date=date(2025, 10, 20),
+)
+
+# Metadata queries use DuckDB
+symbols = reader.get_available_symbols("1 day")
+date_range = reader.get_date_range("AAPL", "1 day")
+```
+
 ## Historical Data Backfilling
 
 `dlt-ibapi` provides comprehensive backfill infrastructure for **gap-aware historical data collection** with intelligent contract selection for options.
@@ -167,17 +252,17 @@ import dlt
 from datetime import date, timedelta
 from dlt_ibapi import backfill_equity_bars
 
-# Create pipeline
+# Create pipeline with Parquet storage
 pipeline = dlt.pipeline(
     pipeline_name="ib_stocks",
-    destination="duckdb",
+    destination=dlt.destinations.filesystem(bucket_url="data"),
     dataset_name="stocks",
 )
 
 # Backfill AAPL daily bars (last 30 days)
 data = backfill_equity_bars(
     symbol="AAPL",
-    database_path="ib_stocks.duckdb",
+    database_path="data",  # Points to Parquet directory
     dataset_name="stocks",
     start_date=date.today() - timedelta(days=30),
     end_date=date.today(),

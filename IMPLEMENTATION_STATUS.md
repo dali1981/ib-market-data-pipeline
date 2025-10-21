@@ -1,9 +1,35 @@
 cl# dlt-ibapi Backfill Implementation Status
 
 **Project**: DLT connector for Interactive Brokers with backfill infrastructure
-**Architecture**: DLT-first (DLT handles writes, repositories are read-only SQL wrappers)
+**Architecture**: DLT-first with Parquet storage (DLT handles writes, repositories are read-only Parquet readers)
 **Date**: 2025-10-20
-**Status**: Core infrastructure and tests complete (~85% done)
+**Status**: Parquet migration complete (~95% done)
+
+---
+
+## Recent Updates
+
+### Parquet Storage Migration (Complete - Oct 2025)
+
+**Status**: ✅ Migration complete (100%) - All systems now use Parquet with Hive partitioning
+
+The project has migrated from DuckDB file storage to **Parquet files with Hive-style partitioning** for improved performance and storage efficiency.
+
+**Key Changes**:
+- **Storage Format**: Parquet files (10x better compression than DuckDB)
+- **Partitioning**: Hive-style by date and symbol (`date=YYYY-MM-DD/symbol=AAPL/`)
+- **Hybrid Query Engine**: DuckDB for metadata, PyArrow for large scans
+- **Reader Architecture**: `ParquetReaderBase` with intelligent query routing
+- **All Examples/CLI**: Updated to use filesystem destination
+- **All Tests**: Updated to use Parquet fixtures
+
+**Benefits**:
+- 10x better compression (typical OHLCV data)
+- Predicate pushdown on partition columns
+- Cloud storage ready (S3, GCS, Azure)
+- No persistent database needed for queries
+
+For detailed migration progress, see `specs/PARQUET_MIGRATION_STATUS.md`.
 
 ---
 
@@ -17,16 +43,26 @@ This project implements comprehensive market data backfilling for Interactive Br
    - Schema inference and validation
    - Deduplication via `primary_key`
    - Write dispositions (append/replace)
-   - Destination adapters (DuckDB, Postgres, Snowflake, etc.)
+   - Destination: Filesystem (Parquet) with Hive partitioning
 
-2. **Read-Only Repositories**: Reader repositories are SQL wrappers that query DLT destinations using parameterized queries. They support gap detection and data inspection.
+2. **Parquet Storage with Partitioning** (New as of v0.2.0):
+   - All data stored as Parquet files with Hive-style partitioning
+   - Partitioned by: date (YYYY-MM-DD) and symbol
+   - DLT automatically creates partition directories
+   - Enables efficient filtering and predicate pushdown
 
-3. **Contract Cache Exception**: The only custom Parquet writer is `ContractCache` because it needs:
+3. **Hybrid Reader Repositories**: Query Parquet files using intelligent routing:
+   - **DuckDB in-memory**: Small queries, metadata, aggregations
+   - **PyArrow**: Large table scans with predicate pushdown
+   - No persistent database needed
+   - Same SQL interface as before
+
+4. **Contract Cache Exception**: The only custom Parquet writer is `ContractCache` because it needs:
    - Custom deduplication by `conid` (contract ID)
    - Persistent cache across pipeline runs
    - Separation from DLT-managed data
 
-4. **Gap Detection**: Uses business day calendars to find missing date ranges, enabling idempotent backfills that only fetch missing data.
+5. **Gap Detection**: Uses business day calendars to find missing date ranges, enabling idempotent backfills that only fetch missing data.
 
 ---
 
