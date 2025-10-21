@@ -97,11 +97,20 @@ class ParquetReaderBase(ABC):
         Returns:
             Query results as DataFrame
         """
+        import glob
+
         conn = duckdb.connect(":memory:")
         try:
             # Register Parquet dataset with Hive partitioning
             table_path = self._get_table_path()
             table_name = self._get_table_name()
+
+            # Check if any Parquet files exist
+            parquet_pattern = f"{table_path}/**/*.parquet"
+            if not glob.glob(parquet_pattern, recursive=True):
+                # No files exist - return empty DataFrame
+                # This handles the first-run case for backfill
+                return pd.DataFrame()
 
             # Create view of Parquet files
             conn.execute(f"""

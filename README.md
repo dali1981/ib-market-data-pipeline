@@ -1078,51 +1078,92 @@ Output schema from `ib_market_data_snapshot()`:
 
 ## Working with Loaded Data
 
-Once data is loaded, you can query it using SQL or pandas:
+Once data is loaded, you can query it using the **Reader API**, SQL, or pandas.
 
-### Query with DuckDB
+### Method 1: Reader API (Recommended)
+
+The `dlt_ibapi.read` module provides a convenient Python API for querying Parquet data:
 
 ```python
-import dlt
-import duckdb
+from dlt_ibapi.read import EquityBarsReader
+from datetime import date, timedelta
 
-# After running your pipeline
-pipeline = dlt.pipeline(
-    pipeline_name="ib_market_data",
-    destination="duckdb",
-    dataset_name="stocks",
+# Initialize reader
+reader = EquityBarsReader(
+    database_path="./data",
+    dataset_name="stocks"
 )
 
-# Connect to the DuckDB database
-conn = duckdb.connect(f"{pipeline.pipeline_name}.duckdb")
+# Get available symbols
+symbols = reader.get_available_symbols(bar_size="1 day")
+print(f"Available symbols: {symbols}")
 
-# Query historical bars
+# Get bars for a symbol
+bars = reader.get_bars(
+    symbol="AAPL",
+    bar_size="1 day",
+    start_date=date.today() - timedelta(days=30),
+    end_date=date.today()
+)
+print(bars)
+
+# Get date range for a symbol
+min_date, max_date = reader.get_date_range("AAPL", "1 day")
+print(f"Data range: {min_date} to {max_date}")
+
+# Get summary for all symbols
+summary = reader.get_symbols_summary(bar_size="1 day")
+print(summary)
+```
+
+**Available Readers:**
+- `EquityBarsReader` - Query historical equity bars
+- `OptionBarsReader` - Query option bars
+- `OptionChainSnapshotReader` - Query option chain snapshots
+
+See `notebooks/02_reading_data.ipynb` for detailed examples.
+
+### Method 2: Query with DuckDB
+
+For SQL queries and aggregations, use DuckDB directly:
+
+```python
+import duckdb
+
+# Connect to DuckDB in-memory
+conn = duckdb.connect(":memory:")
+
+# Query Parquet files with Hive partitioning
 result = conn.execute("""
-    SELECT symbol, timestamp, close, volume
-    FROM stocks.historical_bars
+    SELECT
+        symbol,
+        time::DATE as date,
+        close,
+        volume
+    FROM parquet_scan('./data/stocks/**/*.parquet', hive_partitioning=true)
     WHERE symbol = 'AAPL'
-    ORDER BY timestamp DESC
-    LIMIT 10
-""").fetchdf()
+      AND date >= CURRENT_DATE - INTERVAL '10 days'
+    ORDER BY time DESC
+""").df()
 
 print(result)
 ```
 
-### Query with Pandas
+### Method 3: Query with Pandas
+
+Load data into pandas DataFrame for analysis:
 
 ```python
-import dlt
 import duckdb
+import pandas as pd
 
-pipeline = dlt.pipeline(
-    pipeline_name="ib_market_data",
-    destination="duckdb",
-    dataset_name="stocks",
-)
-
-# Load data into pandas DataFrame
-with duckdb.connect(f"{pipeline.pipeline_name}.duckdb") as conn:
-    df = conn.execute("SELECT * FROM stocks.historical_bars").fetchdf()
+# Query into pandas
+conn = duckdb.connect(":memory:")
+df = conn.execute("""
+    SELECT *
+    FROM parquet_scan('./data/stocks/**/*.parquet', hive_partitioning=true)
+    WHERE symbol = 'AAPL'
+""").df()
 
 # Analyze with pandas
 print(df.describe())

@@ -266,7 +266,17 @@ pipeline.run(data)
 
 ## Reader Repositories
 
-SQL-based query wrappers for reading DLT-written data.
+**Public API:** Import from `dlt_ibapi.read`
+
+```python
+from dlt_ibapi.read import (
+    EquityBarsReader,
+    OptionBarsReader,
+    OptionChainSnapshotReader,
+)
+```
+
+SQL-based query wrappers for reading DLT-written Parquet data with efficient predicate pushdown.
 
 ### BaseReader
 

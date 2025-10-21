@@ -4,12 +4,18 @@ from typing import Any, Dict
 from datetime import datetime
 
 
-def normalize_bar_data(bar: Dict[str, Any], symbol: str, exchange: str, currency: str) -> Dict[str, Any]:
+def normalize_bar_data(
+    bar: Dict[str, Any],
+    symbol: str,
+    exchange: str,
+    currency: str,
+    bar_size: str = "1 day"
+) -> Dict[str, Any]:
     """
     Normalize historical bar data from IB API format to DLT schema.
 
     Adds partition columns for Parquet storage:
-    - time: Full datetime (primary key)
+    - time: Full datetime/timestamp as ISO string (primary key)
     - date: Date only (partition column)
 
     Args:
@@ -17,34 +23,58 @@ def normalize_bar_data(bar: Dict[str, Any], symbol: str, exchange: str, currency
         symbol: Stock symbol
         exchange: Exchange
         currency: Currency
+        bar_size: Bar size (e.g., "1 day", "1 min")
 
     Returns:
         Normalized bar data with partition columns
     """
-    # Get timestamp from bar (IB returns datetime string)
-    bar_datetime = bar.get("date")
+    from datetime import datetime as dt
 
-    # Extract date for partitioning if datetime is available
+    # Get timestamp from bar (IB returns various formats)
+    bar_datetime_raw = bar.get("date")
+
+    # Parse and normalize to ISO format timestamp
+    bar_datetime = None
     bar_date = None
-    if bar_datetime:
-        if isinstance(bar_datetime, str):
-            # Parse datetime string to extract date
+
+    if bar_datetime_raw:
+        if isinstance(bar_datetime_raw, str):
+            # Handle different IB date/time formats:
+            # - "YYYYMMDD" (daily bars) -> "YYYY-MM-DD 00:00:00"
+            # - "YYYYMMDD HH:MM:SS" (intraday bars) -> "YYYY-MM-DD HH:MM:SS"
+            # - "YYYY-MM-DD HH:MM:SS" (already ISO-ish)
             try:
-                from datetime import datetime as dt
-                parsed_dt = dt.fromisoformat(bar_datetime.replace(" ", "T"))
+                if len(bar_datetime_raw) == 8 and bar_datetime_raw.isdigit():
+                    # Daily bar format: YYYYMMDD
+                    parsed_dt = dt.strptime(bar_datetime_raw, "%Y%m%d")
+                elif " " in bar_datetime_raw and len(bar_datetime_raw) <= 17:
+                    # Intraday format: "YYYYMMDD HH:MM:SS"
+                    parsed_dt = dt.strptime(bar_datetime_raw, "%Y%m%d %H:%M:%S")
+                else:
+                    # Try ISO format with T or space separator
+                    parsed_dt = dt.fromisoformat(bar_datetime_raw.replace(" ", "T"))
+
+                # Store as ISO string (DuckDB and Parquet will recognize this)
+                bar_datetime = parsed_dt.isoformat()
                 bar_date = parsed_dt.date().isoformat()
-            except:
-                # If parsing fails, try to extract date portion (YYYY-MM-DD)
-                bar_date = bar_datetime[:10] if len(bar_datetime) >= 10 else None
-        elif hasattr(bar_datetime, 'date'):
-            # datetime object
-            bar_date = bar_datetime.date().isoformat()
+            except ValueError as e:
+                # Fallback: store as-is if parsing fails
+                bar_datetime = bar_datetime_raw
+                bar_date = bar_datetime_raw[:10] if len(bar_datetime_raw) >= 10 else None
+        elif hasattr(bar_datetime_raw, 'isoformat'):
+            # Python datetime object
+            bar_datetime = bar_datetime_raw.isoformat()
+            bar_date = bar_datetime_raw.date().isoformat()
+        else:
+            # Fallback: convert to string
+            bar_datetime = str(bar_datetime_raw)
 
     return {
         "symbol": symbol,
         "exchange": exchange,
         "currency": currency,
-        "time": bar_datetime,  # Full datetime (primary key)
+        "bar_size": bar_size,  # Part of primary key
+        "time": bar_datetime,  # Full datetime as ISO string (primary key)
         "date": bar_date,      # Date only (partition column for Hive partitioning)
         "timestamp": bar_datetime,  # Backward compatibility
         "open": float(bar.get("open", 0)),

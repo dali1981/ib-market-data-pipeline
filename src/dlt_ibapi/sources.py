@@ -87,7 +87,7 @@ def ib_historical_bars(
 
     try:
         hist_svc = HistoricalService(runtime)
-        contract = make_stock(symbol, exchange, currency) if sec_type == "STK" else None
+        contract = make_stock(symbol, exch=exchange, curr=currency) if sec_type == "STK" else None
 
         if not contract:
             raise ValueError(f"Unsupported security type: {sec_type}")
@@ -113,7 +113,7 @@ def ib_historical_bars(
 
         bar_count = 0
         for bar in bars:
-            yield normalize_bar_data(bar, symbol, exchange, currency)
+            yield normalize_bar_data(bar, symbol, exchange, currency, hist_cfg.bar_size)
             bar_count += 1
 
         log.info(f"Yielded {bar_count} bars for {symbol}")
@@ -155,7 +155,7 @@ def ib_market_data_snapshot(
         contract_svc = ContractDetailsService(runtime)
 
         for symbol in symbols:
-            contract = make_stock(symbol, exchange, currency)
+            contract = make_stock(symbol, exch=exchange, curr=currency)
             details = contract_svc.fetch(contract, timeout=market_cfg.timeout)
 
             for detail in details:
@@ -250,7 +250,7 @@ def ib_contract_details(
         contract_svc = ContractDetailsService(runtime)
 
         for symbol in symbols:
-            contract = make_stock(symbol, exchange, currency) if sec_type == "STK" else None
+            contract = make_stock(symbol, exch=exchange, curr=currency) if sec_type == "STK" else None
             if not contract:
                 continue
 

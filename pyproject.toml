@@ -4,10 +4,12 @@ version = "0.1.0"
 description = "DLT connector for Interactive Brokers - ingest market data via IB Gateway/TWS into data pipelines"
 requires-python = ">=3.10"
 dependencies = [
-    "dlt[filesystem,parquet,duckdb]>=0.4.0",  # Added filesystem and parquet extras
+    "dlt[filesystem,parquet,duckdb]>=0.4.0", # Added filesystem and parquet extras
     "ib-connector>=0.1.0",
+    "notebook>=7.4.7",
     "omegaconf>=2.3.0",
     "pandas>=2.3.3",
+    "pandas-market-calendars>=5.1.1",
     "pyarrow>=21.0.0",
     "pydantic>=2.0.0",
     "rich>=14.2.0",
@@ -34,6 +36,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "matplotlib>=3.10.7",
     "pytest>=8.4.2",
 ]
 

@@ -184,7 +184,7 @@ def test_connection(
             from ib_connector import ContractDetailsService, make_stock
 
             svc = ContractDetailsService(runtime)
-            contract = make_stock("AAPL", "SMART", "USD")
+            contract = make_stock("AAPL", exch="SMART", curr="USD")
             details = svc.fetch(contract, timeout=10.0)
 
         if details:

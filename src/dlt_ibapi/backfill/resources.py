@@ -361,7 +361,7 @@ def backfill_option_bars(
                     bar_count = 0
                     for bar in bars:
                         # Normalize and add contract identifiers
-                        record = normalize_bar_data(bar, underlying, "SMART", "USD")
+                        record = normalize_bar_data(bar, underlying, "SMART", "USD", backfill_config.bar_size)
                         record.update({
                             "underlying": underlying.upper(),
                             "expiry": expiry,
@@ -422,7 +422,7 @@ def option_bars_backfill_source(
 
 
 @dlt.resource(
-    name="equity_bars_backfill",
+    name="historical_bars",
     write_disposition="append",
     primary_key=["symbol", "bar_size", "time"],
     columns={
@@ -515,6 +515,7 @@ def backfill_equity_bars(
             present_dates=present_dates,
             start=start_date,
             end=end_date,
+            exchange="NYSE",  # Use NYSE calendar for US equities
         )
 
         if not gaps:
@@ -533,11 +534,7 @@ def backfill_equity_bars(
             )
 
             # Create stock contract
-            contract = make_stock(
-                symbol=symbol,
-                exchange="SMART",
-                currency="USD",
-            )
+            contract = make_stock(symbol, exch="SMART", curr="USD")
 
             # Fetch historical bars
             try:
@@ -553,20 +550,43 @@ def backfill_equity_bars(
 
                 bar_count = 0
                 for bar in bars:
-                    # Normalize and add symbol + bar_size
-                    record = normalize_bar_data(bar, symbol, "SMART", "USD")
+                    # Normalize (bar_size now included in normalize_bar_data)
+                    record = normalize_bar_data(bar, symbol, "SMART", "USD", bar_size)
                     record.update({
                         "symbol": symbol.upper(),
-                        "bar_size": bar_size,
                     })
 
                     yield record
                     bar_count += 1
 
-                log.info(f"Yielded {bar_count} bars for gap {gap_start} to {gap_end}")
+                if bar_count == 0:
+                    log.warning(
+                        f"No bars returned for {gap_start} to {gap_end} "
+                        f"(market may have been closed - holiday or no trading)"
+                    )
+                else:
+                    log.info(f"Yielded {bar_count} bars for gap {gap_start} to {gap_end}")
 
             except Exception as e:
-                log.error(f"Failed to fetch bars for {gap_start} to {gap_end}: {e}")
+                # IB errors come as exceptions with error codes
+                # Common codes: 2174 (no data), 162 (HMDS error), 200 (no security def)
+                error_str = str(e)
+
+                # Extract IB error code if present
+                if "IB error" in error_str and ":" in error_str:
+                    # Format: "IB error REQID: CODE message"
+                    parts = error_str.split(":")
+                    if len(parts) >= 2:
+                        code = parts[1].strip().split()[0]
+                        log.warning(
+                            f"IB API returned error {code} for {gap_start} to {gap_end}. "
+                            f"Gap may contain non-trading days (holidays/weekends). "
+                            f"Full error: {error_str}"
+                        )
+                    else:
+                        log.error(f"IB error for {gap_start} to {gap_end}: {error_str}")
+                else:
+                    log.error(f"Failed to fetch bars for {gap_start} to {gap_end}: {error_str}")
                 continue
 
     finally:

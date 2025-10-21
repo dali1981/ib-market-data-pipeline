@@ -110,9 +110,9 @@ This enables fast filtering: `WHERE symbol = 'AAPL' AND date >= '2025-10-01'`
 
 ### Query Methods
 
-1. **DuckDB** - SQL queries, best for analytics and aggregations
-2. **PyArrow** - Direct Parquet access, best for large scans
-3. **Reader Repositories** - Convenient Python API, uses PyArrow internally
+1. **Reader API** (`dlt_ibapi.read`) - Recommended Python API for querying data
+2. **DuckDB** - SQL queries, best for analytics and aggregations
+3. **PyArrow** - Direct Parquet access, best for large scans with custom filters
 
 ## Example Workflows
 
@@ -121,7 +121,7 @@ This enables fast filtering: `WHERE symbol = 'AAPL' AND date >= '2025-10-01'`
 ```python
 import dlt
 from dlt_ibapi import ib_historical_bars
-from dlt_ibapi.repositories import EquityBarsReader
+from dlt_ibapi.read import EquityBarsReader
 
 # 1. Fetch data
 pipeline = dlt.pipeline(
@@ -135,6 +135,7 @@ pipeline.run(data, loader_file_format="parquet")
 # 2. Query with Reader API
 reader = EquityBarsReader("data", "stocks")
 bars = reader.get_bars(symbol="AAPL", bar_size="1 day")
+symbols = reader.get_available_symbols()
 ```
 
 ### Backfill Historical Data

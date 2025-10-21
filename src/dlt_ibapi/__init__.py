@@ -3,6 +3,16 @@ dlt-ibapi: DLT connector for Interactive Brokers.
 
 Provides DLT sources and resources for ingesting market data from IB Gateway/TWS
 into data pipelines (DuckDB, PostgreSQL, Snowflake, etc.).
+
+Writing data (pipeline resources):
+    - ib_historical_bars: Fetch and load historical bars
+    - backfill_equity_bars: Backfill historical equity bars with gap detection
+    - snapshot_option_chain: Capture option chain snapshots
+
+Reading data (query API):
+    - read.EquityBarsReader: Query historical equity bars from Parquet
+    - read.OptionBarsReader: Query option bars from Parquet
+    - read.OptionChainSnapshotReader: Query option chain snapshots
 """
 
 from .sources import (
@@ -20,6 +30,7 @@ from .backfill import (
     backfill_equity_bars,
     equity_bars_backfill_source,
 )
+from . import read  # Public API for reading data
 
 __version__ = "0.1.0"
 
@@ -37,4 +48,6 @@ __all__ = [
     "option_bars_backfill_source",
     "backfill_equity_bars",
     "equity_bars_backfill_source",
+    # Read API
+    "read",
 ]

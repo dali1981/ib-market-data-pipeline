@@ -115,7 +115,7 @@ class TestEquityBackfillResource:
         # Verify data written to database
         conn = duckdb.connect(":memory:")
         result = conn.execute(
-            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "historical_bars"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
         ).fetchone()
         assert result[0] == 5  # 5 days of bars
 
@@ -168,7 +168,7 @@ class TestEquityBackfillResource:
                 volume,
                 average,
                 bar_count
-            FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true)
+            FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "historical_bars"}/**/*.parquet', hive_partitioning=true)
             WHERE symbol = 'SPY'
             ORDER BY time
             LIMIT 1
@@ -258,7 +258,7 @@ class TestEquityBackfillResource:
         # Verify initial data
         conn = duckdb.connect(":memory:")
         initial_count = conn.execute(
-            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "historical_bars"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
         ).fetchone()[0]
         assert initial_count == 3  # Only 3 bars initially
 
@@ -302,7 +302,7 @@ class TestEquityBackfillResource:
 
         # Verify gaps filled
         final_count = conn.execute(
-            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "historical_bars"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
         ).fetchone()[0]
         assert final_count == 5  # All 5 bars now present
 
@@ -385,10 +385,10 @@ class TestEquityBackfillResource:
         # Verify both symbols present
         conn = duckdb.connect(":memory:")
         spy_count = conn.execute(
-            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "historical_bars"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'SPY'"
         ).fetchone()[0]
         qqq_count = conn.execute(
-            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'QQQ'"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "historical_bars"}/**/*.parquet', hive_partitioning=true) WHERE symbol = 'QQQ'"
         ).fetchone()[0]
 
         assert spy_count == 1
@@ -815,7 +815,7 @@ class TestBackfillErrorHandling:
         # Should have zero records
         conn = duckdb.connect(":memory:")
         result = conn.execute(
-            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "equity_bars_backfill"}/**/*.parquet', hive_partitioning=true)"
+            "SELECT COUNT(*) FROM parquet_scan('{Path(temp_data_dir) / "stocks" / "historical_bars"}/**/*.parquet', hive_partitioning=true)"
         ).fetchone()
         assert result[0] == 0
 

@@ -49,7 +49,7 @@ def test_parquet_dir():
         )
 
         @dlt.resource(
-            name="equity_bars_backfill",
+            name="historical_bars",
             write_disposition="append",
             primary_key=["symbol", "bar_size", "time"],
             columns={
@@ -478,7 +478,7 @@ class TestBaseReaderMethods:
 
         df = reader.query("""
             SELECT symbol, AVG(close) as avg_close
-            FROM stocks.equity_bars_backfill
+            FROM stocks.historical_bars
             WHERE symbol = $symbol
             GROUP BY symbol
         """, params={"symbol": "AAPL"})

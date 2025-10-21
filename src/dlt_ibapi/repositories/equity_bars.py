@@ -18,13 +18,13 @@ class EquityBarsReader(ParquetReaderBase):
     """
     Reader for equity bars data written by DLT.
 
-    Table: equity_bars_backfill
+    Table: historical_bars
     Primary key: [symbol, bar_size, time]
     """
 
     def _get_table_name(self) -> str:
         """Table name for equity bars."""
-        return "equity_bars_backfill"
+        return "historical_bars"
 
     def get_present_dates_for_symbol(
         self,

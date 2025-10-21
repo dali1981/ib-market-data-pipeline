@@ -164,7 +164,7 @@ class ContractResolver:
         # (We skip MatchingSymbols for now since most equity symbols resolve directly)
         from ib_connector import make_stock
 
-        contract = make_stock(symbol, exchange, currency) if sec_type == "STK" else None
+        contract = make_stock(symbol, exch=exchange, curr=currency) if sec_type == "STK" else None
         if not contract:
             return None
 
