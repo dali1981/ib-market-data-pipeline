@@ -297,10 +297,11 @@ def snapshot(
     ),
     min_dte: int = typer.Option(7, "--min-dte", help="Minimum days to expiration"),
     max_dte: int = typer.Option(365, "--max-dte", help="Maximum days to expiration"),
-    database: str = typer.Option(
-        "ib_snapshots.duckdb", "--database", "--db", help="Database path"
+    pipeline_name: str = typer.Option(
+        "ib_snapshots", "--pipeline-name", "--pipeline", help="Pipeline name"
     ),
     dataset: str = typer.Option("options", "--dataset", help="Dataset name"),
+    database: Optional[str] = typer.Option(None, "--database", "--db", help="[Deprecated] Use --pipeline-name instead"),
     config_file: Optional[Path] = typer.Option(
         None, "--config", "-c", help="Path to config file"
     ),
@@ -310,9 +311,15 @@ def snapshot(
 
     Example:
         dlt-ibapi snapshot AAPL --min-dte 7 --max-dte 60
+        dlt-ibapi snapshot AAPL --pipeline-name my_snapshots --dataset options
     """
     from .backfill import snapshot_option_chain
     from .repositories import OptionChainSnapshotReader
+
+    # Handle legacy --database argument
+    if database:
+        console.print("[yellow]Warning: --database is deprecated. Use --pipeline-name instead.[/yellow]")
+        pipeline_name = database.replace(".duckdb", "")
 
     console.print(f"\n[bold cyan]Capturing option chain snapshot for {symbol}[/bold cyan]\n")
 
@@ -322,7 +329,7 @@ def snapshot(
     console.print(f"Symbol:        {symbol}")
     console.print(f"Date:          {snap_date}")
     console.print(f"DTE range:     {min_dte} to {max_dte}")
-    console.print(f"Database:      {database}")
+    console.print(f"Pipeline:      {pipeline_name}")
     console.print(f"Dataset:       {dataset}\n")
 
     try:
@@ -331,7 +338,7 @@ def snapshot(
 
         # Create pipeline with filesystem destination (Parquet)
         pipeline = dlt.pipeline(
-            pipeline_name=database.replace(".duckdb", ""),
+            pipeline_name=pipeline_name,
             destination=dlt.destinations.filesystem(bucket_url="data"),
             dataset_name=dataset,
         )
@@ -399,8 +406,9 @@ def backfill_options(
     k_strikes: int = typer.Option(5, "--k-strikes", "-k", help="K strikes for ATM mode"),
     min_dte: int = typer.Option(7, "--min-dte", help="Minimum days to expiration"),
     max_dte: int = typer.Option(60, "--max-dte", help="Maximum days to expiration"),
-    database: str = typer.Option("ib_options.duckdb", "--database", "--db", help="Database path"),
+    pipeline_name: str = typer.Option("ib_options", "--pipeline-name", "--pipeline", help="Pipeline name"),
     dataset: str = typer.Option("options", "--dataset", help="Dataset name"),
+    database: Optional[str] = typer.Option(None, "--database", "--db", help="[Deprecated] Use --pipeline-name instead"),
     config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """
@@ -408,6 +416,7 @@ def backfill_options(
 
     Example:
         dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
+        dlt-ibapi backfill-options AAPL 150.0 --pipeline-name my_options
     """
     from .backfill import backfill_option_bars, OptionBackfillConfig, ContractSelectionMode
 
@@ -425,6 +434,11 @@ def backfill_options(
         "all": ContractSelectionMode.ALL,
     }
 
+    # Handle legacy --database argument
+    if database:
+        console.print("[yellow]Warning: --database is deprecated. Use --pipeline-name instead.[/yellow]")
+        pipeline_name = database.replace(".duckdb", "")
+
     if mode not in mode_map:
         console.print(f"[red]✗[/red] Invalid mode: {mode}. Choose from: atm, moneyness, delta, all")
         raise typer.Exit(1)
@@ -434,7 +448,7 @@ def backfill_options(
     console.print(f"Bar size:      {bar_size}")
     console.print(f"Selection:     {mode}")
     console.print(f"DTE range:     {min_dte} to {max_dte}")
-    console.print(f"Database:      {database}")
+    console.print(f"Pipeline:      {pipeline_name}")
     console.print(f"Dataset:       {dataset}\n")
 
     try:
@@ -454,7 +468,7 @@ def backfill_options(
 
         # Create pipeline with filesystem destination (Parquet)
         pipeline = dlt.pipeline(
-            pipeline_name=database.replace(".duckdb", ""),
+            pipeline_name=pipeline_name,
             destination=dlt.destinations.filesystem(bucket_url="data"),
             dataset_name=dataset,
         )
@@ -494,8 +508,9 @@ def backfill_equity(
         None, "--end", help="End date (YYYY-MM-DD, default: today)"
     ),
     bar_size: str = typer.Option("1 day", "--bar-size", "-b", help="Bar size"),
-    database: str = typer.Option("ib_stocks.duckdb", "--database", "--db", help="Database path"),
+    pipeline_name: str = typer.Option("ib_stocks", "--pipeline-name", "--pipeline", help="Pipeline name"),
     dataset: str = typer.Option("stocks", "--dataset", help="Dataset name"),
+    database: Optional[str] = typer.Option(None, "--database", "--db", help="[Deprecated] Use --pipeline-name instead"),
     config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """
@@ -503,8 +518,14 @@ def backfill_equity(
 
     Example:
         dlt-ibapi backfill-equity AAPL MSFT GOOGL --bar-size "1 day"
+        dlt-ibapi backfill-equity AAPL --pipeline-name my_stocks
     """
     from .backfill import equity_bars_backfill_source
+
+    # Handle legacy --database argument
+    if database:
+        console.print("[yellow]Warning: --database is deprecated. Use --pipeline-name instead.[/yellow]")
+        pipeline_name = database.replace(".duckdb", "")
 
     console.print(f"\n[bold cyan]Backfilling equity bars for {len(symbols)} symbols[/bold cyan]\n")
 
@@ -515,7 +536,7 @@ def backfill_equity(
     console.print(f"Symbols:       {', '.join(symbols)}")
     console.print(f"Date range:    {start_date} to {end_date}")
     console.print(f"Bar size:      {bar_size}")
-    console.print(f"Database:      {database}")
+    console.print(f"Pipeline:      {pipeline_name}")
     console.print(f"Dataset:       {dataset}\n")
 
     try:
@@ -524,7 +545,7 @@ def backfill_equity(
 
         # Create pipeline with filesystem destination (Parquet)
         pipeline = dlt.pipeline(
-            pipeline_name=database.replace(".duckdb", ""),
+            pipeline_name=pipeline_name,
             destination=dlt.destinations.filesystem(bucket_url="data"),
             dataset_name=dataset,
         )
@@ -580,22 +601,28 @@ def backfill_equity(
 @app.command()
 def list_snapshots(
     symbol: Optional[str] = typer.Argument(None, help="Symbol to list snapshots for"),
-    database: str = typer.Option("ib_snapshots.duckdb", "--database", "--db", help="Database path"),
+    data_dir: str = typer.Option("./data", "--data-dir", help="Data directory path"),
     dataset: str = typer.Option("options", "--dataset", help="Dataset name"),
+    database: Optional[str] = typer.Option(None, "--database", "--db", help="[Deprecated] Use --data-dir instead"),
 ):
     """
     List available option chain snapshots.
 
     Example:
         dlt-ibapi list-snapshots AAPL
-        dlt-ibapi list-snapshots  # List all
+        dlt-ibapi list-snapshots --data-dir ./data --dataset options
     """
     from .repositories import OptionChainSnapshotReader
+
+    # Handle legacy --database argument
+    if database:
+        console.print("[yellow]Warning: --database is deprecated. Use --data-dir instead.[/yellow]")
+        data_dir = database.replace(".duckdb", "")
 
     console.print(f"\n[bold cyan]Available Option Chain Snapshots[/bold cyan]\n")
 
     try:
-        reader = OptionChainSnapshotReader(database, dataset)
+        reader = OptionChainSnapshotReader(data_dir, dataset)
 
         if symbol:
             # List snapshots for specific symbol
@@ -632,40 +659,61 @@ def list_snapshots(
 
 @app.command()
 def stats(
-    database: str = typer.Argument(..., help="Database path"),
+    data_dir: str = typer.Argument(..., help="Data directory path (e.g., './data')"),
     dataset: str = typer.Option("options", "--dataset", help="Dataset name"),
+    database: Optional[str] = typer.Option(None, "--database", "--db", help="[Deprecated] Use data_dir instead"),
 ):
     """
-    Show database statistics (table sizes, date ranges, contract counts).
+    Show Parquet data statistics (table sizes, date ranges, contract counts).
 
     Example:
-        dlt-ibapi stats ib_options.duckdb --dataset options
+        dlt-ibapi stats ./data --dataset stocks
+        dlt-ibapi stats ./data --dataset options
     """
     import duckdb
+    import glob
 
-    console.print(f"\n[bold cyan]Database Statistics[/bold cyan]\n")
-    console.print(f"Database: {database}")
-    console.print(f"Dataset:  {dataset}\n")
+    # Handle legacy --database argument
+    if database:
+        console.print("[yellow]Warning: --database is deprecated. Use data_dir argument instead.[/yellow]")
+        data_dir = database
+
+    console.print(f"\n[bold cyan]Parquet Data Statistics[/bold cyan]\n")
+    console.print(f"Data directory: {data_dir}")
+    console.print(f"Dataset:        {dataset}\n")
 
     try:
-        conn = duckdb.connect(database, read_only=True)
+        data_path = Path(data_dir) / dataset
 
-        # Get all tables
-        tables_df = conn.execute(f"""
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = '{dataset}'
-        """).df()
+        if not data_path.exists():
+            console.print(f"[red]✗[/red] Data directory does not exist: {data_path}")
+            raise typer.Exit(1)
 
-        if tables_df.empty:
+        # Find all table directories (subdirectories with Parquet files)
+        table_dirs = [d for d in data_path.iterdir() if d.is_dir()]
+
+        if not table_dirs:
             console.print(f"No tables found in dataset '{dataset}'")
             return
 
-        for table_name in tables_df['table_name']:
-            full_table = f"{dataset}.{table_name}"
+        conn = duckdb.connect(":memory:")
+
+        for table_dir in sorted(table_dirs):
+            table_name = table_dir.name
+            parquet_pattern = f"{table_dir}/**/*.parquet"
+
+            # Check if any Parquet files exist
+            parquet_files = glob.glob(parquet_pattern, recursive=True)
+            if not parquet_files:
+                console.print(f"[dim]{table_name}[/dim]")
+                console.print(f"  [dim]No Parquet files found[/dim]\n")
+                continue
 
             # Get row count
-            count_df = conn.execute(f"SELECT COUNT(*) as count FROM {full_table}").df()
+            count_df = conn.execute(f"""
+                SELECT COUNT(*) as count
+                FROM parquet_scan('{table_dir}/**/*.parquet', hive_partitioning=true)
+            """).df()
             row_count = int(count_df.iloc[0]['count'])
 
             # Get date range if table has time column
@@ -674,7 +722,7 @@ def stats(
                     SELECT
                         MIN(DATE(time)) as min_date,
                         MAX(DATE(time)) as max_date
-                    FROM {full_table}
+                    FROM parquet_scan('{table_dir}/**/*.parquet', hive_partitioning=true)
                 """).df()
 
                 if not date_range_df.empty and not date_range_df.iloc[0].isnull().all():

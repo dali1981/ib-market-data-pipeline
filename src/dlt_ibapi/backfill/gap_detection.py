@@ -51,7 +51,12 @@ def business_day_range(start: date, end: date) -> List[date]:
 
     Returns:
         List of business days as date objects
+
+    Raises:
+        ValueError: If start_date > end_date
     """
+    if start > end:
+        raise ValueError("start_date must be <= end_date")
     return pd.bdate_range(start, end).date.tolist()
 
 
@@ -126,4 +131,4 @@ def validate_date_range(start: date, end: date) -> None:
         ValueError: If start > end
     """
     if start > end:
-        raise ValueError(f"Start date {start} cannot be after end date {end}")
+        raise ValueError("start_date must be <= end_date")

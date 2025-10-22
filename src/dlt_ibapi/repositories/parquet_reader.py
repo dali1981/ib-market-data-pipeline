@@ -50,6 +50,7 @@ class ParquetReaderBase(ABC):
         self.database_path = Path(database_path)
         self.dataset_name = dataset_name
         self.data_root = self.database_path / dataset_name
+        self.destination_type = "filesystem"
 
         if not self.data_root.exists():
             raise ValueError(f"Data directory does not exist: {self.data_root}")

@@ -10,6 +10,7 @@ DLT connector for Interactive Brokers - ingest market data from IB Gateway/TWS i
 - [Quick Start](#quick-start)
 - [Data Storage](#data-storage)
 - [Historical Data Backfilling](#historical-data-backfilling)
+- [Orchestration with Dagster](#orchestration-with-dagster)
 - [Configuration](#configuration)
   - [YAML Configuration](#method-1-yaml-configuration-recommended)
   - [Environment Variables](#method-2-environment-variables)
@@ -429,6 +430,58 @@ For comprehensive documentation:
 - **API Reference**: [docs/API_REFERENCE.md](docs/API_REFERENCE.md) - Full API documentation
 - **Examples**: [examples/](examples/) - Working code samples
 - **Notebooks**: [notebooks/](notebooks/) - Interactive Jupyter notebooks
+
+## Orchestration with Dagster
+
+For production deployments with scheduling, monitoring, and automation, use the **Dagster orchestration layer**:
+
+```bash
+cd ../dagster-ib-pipeline
+```
+
+### Key Features
+
+- **Native DLT Integration**: Wraps dlt-ibapi sources as Dagster assets
+- **Automated Scheduling**: Built-in schedules for ingestion and deduplication
+- **Parquet Deduplication**: DuckDB-based dedup on primary keys
+- **Asset Lineage**: Visual data flow tracking
+- **Local Development UI**: Web interface for monitoring and execution
+
+### Quick Start
+
+```bash
+cd ../dagster-ib-pipeline
+
+# Install dependencies (includes dlt-ibapi)
+uv sync
+
+# Start Dagster UI
+uv run dagster dev -m dagster_ib_pipeline
+```
+
+Open http://localhost:3000
+
+### Documentation
+
+- **[dagster-ib-pipeline/README.md](../dagster-ib-pipeline/README.md)** - Overview and features
+- **[dagster-ib-pipeline/GETTING_STARTED.md](../dagster-ib-pipeline/GETTING_STARTED.md)** - Installation and usage guide
+- **[dagster-ib-pipeline/ORCHESTRATION_STRATEGY.md](../dagster-ib-pipeline/ORCHESTRATION_STRATEGY.md)** - Architecture decisions
+
+### Data Flow
+
+```
+IB API → DLT Ingestion (dlt-ibapi) → Raw Parquet
+         ↓
+         Dagster Schedules (every 15 min)
+         ↓
+         Deduplication (DuckDB) → Clean Parquet
+```
+
+**Benefits**:
+- Separation of concerns: dlt-ibapi handles ingestion, Dagster handles orchestration
+- Idempotent: Re-runs don't create duplicates
+- Schedulable: Automated data collection during market hours
+- Monitorable: Track asset materialization and data quality
 
 ## Notebooks
 

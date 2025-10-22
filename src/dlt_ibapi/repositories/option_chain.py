@@ -219,7 +219,7 @@ class OptionChainSnapshotReader(ParquetReaderBase):
             ORDER BY snapshot_date
         """
 
-        df = self._execute_query(query, {"underlying": underlying.upper()})
+        df = self._query_with_duckdb(query, {"underlying": underlying.upper()})
         return set(df["snapshot_date"].tolist()) if not df.empty else set()
 
     def get_exchanges_for_snapshot(

@@ -9,6 +9,7 @@ from datetime import date
 from typing import List, Optional, Set
 
 import pandas as pd
+import pyarrow as pa
 import pyarrow.compute as pc
 
 from .parquet_reader import ParquetReaderBase
@@ -98,19 +99,20 @@ class OptionBarsReader(ParquetReaderBase):
 
         if use_pyarrow:
             # Use PyArrow with predicate pushdown
+            # Note: Use pa.scalar() to ensure proper type matching for date fields
             filter_expr = (
                 (pc.field("underlying") == underlying_upper) &
-                (pc.field("expiry") == expiry.isoformat()) &
+                (pc.field("expiry") == pa.scalar(expiry)) &
                 (pc.field("strike") == strike) &
                 (pc.field("right") == right_upper) &
                 (pc.field("bar_size") == bar_size)
             )
 
             if start_date:
-                filter_expr = filter_expr & (pc.field("date") >= start_date.isoformat())
+                filter_expr = filter_expr & (pc.field("date") >= pa.scalar(start_date))
 
             if end_date:
-                filter_expr = filter_expr & (pc.field("date") <= end_date.isoformat())
+                filter_expr = filter_expr & (pc.field("date") <= pa.scalar(end_date))
 
             df = self._query_with_pyarrow(
                 columns=None,  # Select all columns
