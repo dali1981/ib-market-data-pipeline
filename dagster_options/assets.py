@@ -9,7 +9,7 @@ import dlt
 from dagster import asset, AssetExecutionContext, Output, MetadataValue
 
 from ib_connector import IBRuntime
-from dlt_ibapi.config import IBConnectionConfig
+from dlt_ibapi.config_loader import get_connection_config
 from dlt_ibapi.resolution.contract_cache import ContractCache
 from dlt_ibapi.resolution.resolver import ContractResolver
 from dlt_ibapi.repositories.equity_bars import EquityBarsReader
@@ -61,7 +61,13 @@ def ticker_contracts(context: AssetExecutionContext) -> Output[pd.DataFrame]:
     context.log.info(f"Loaded {len(tickers)} tickers: {', '.join(tickers)}")
 
     # Initialize IB runtime and resolver
-    ib_config = IBConnectionConfig()
+    # Load config from: env vars > user config (.dlt-ibapi/ib_gateway.yaml) > package defaults
+    ib_config = get_connection_config()
+    context.log.info(
+        f"Connecting to IB Gateway at {ib_config.host}:{ib_config.port} "
+        f"(client_id={ib_config.client_id})"
+    )
+
     runtime = IBRuntime(
         host=ib_config.host,
         port=ib_config.port,
