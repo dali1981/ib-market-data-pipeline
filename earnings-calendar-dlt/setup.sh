@@ -23,6 +23,12 @@ uv sync
 echo "✅ Dependencies installed"
 echo ""
 
+# Install package in editable mode
+echo "📦 Installing package in editable mode..."
+uv pip install -e .
+echo "✅ Package installed"
+echo ""
+
 # Install Playwright
 echo "🎭 Installing Playwright browsers..."
 uv run playwright install chromium

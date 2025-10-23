@@ -52,6 +52,6 @@ defs = Definitions(
         weekday_earnings_calendar_schedule,
     ],
     resources={
-        "dlt": DagsterDltResource(),
+        "dlt_resource": DagsterDltResource(),
     },
 )

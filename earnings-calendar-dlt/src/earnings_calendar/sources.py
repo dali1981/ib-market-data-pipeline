@@ -1,10 +1,14 @@
 """DLT sources and resources for earnings calendar data."""
 
 import dlt
-from typing import Iterator, Dict, Any, Optional, List
+from typing import Iterator, Dict, Any, Optional, List, TYPE_CHECKING
 import logging
 
+if TYPE_CHECKING:
+    from dlt.pipeline import LoadInfo
+
 from .scraper import NasdaqEarningsScraper
+from .scraper_curlcffi import CurlCffiEarningsScraper
 from .transformers import normalize_earnings_record, add_partition_columns
 from .config import EarningsScraperConfig, get_default_config
 
@@ -46,16 +50,31 @@ def earnings_calendar_resource(
         scraper_config.days_ahead = days_ahead
 
     logger.info(
-        f"Fetching earnings calendar: days_ahead={scraper_config.days_ahead}, "
-        f"date={date or 'range'}"
+        f"Fetching earnings calendar: backend={scraper_config.backend}, "
+        f"days_ahead={scraper_config.days_ahead}, date={date or 'range'}"
     )
 
-    # Create scraper and fetch data
-    scraper = NasdaqEarningsScraper(
-        days_ahead=scraper_config.days_ahead,
-        use_playwright_fallback=scraper_config.use_playwright_fallback,
-        timeout=scraper_config.timeout,
-    )
+    # Create scraper based on configured backend
+    if scraper_config.backend == "curlcffi":
+        scraper = CurlCffiEarningsScraper(
+            days_ahead=scraper_config.days_ahead,
+            timeout=scraper_config.timeout,
+            impersonate=scraper_config.impersonate,
+        )
+    elif scraper_config.backend == "playwright":
+        scraper = NasdaqEarningsScraper(
+            days_ahead=scraper_config.days_ahead,
+            use_playwright_fallback=True,
+            timeout=scraper_config.timeout,
+        )
+    elif scraper_config.backend == "api":
+        scraper = NasdaqEarningsScraper(
+            days_ahead=scraper_config.days_ahead,
+            use_playwright_fallback=False,
+            timeout=scraper_config.timeout,
+        )
+    else:
+        raise ValueError(f"Unknown scraper backend: {scraper_config.backend}")
 
     try:
         raw_records = scraper.fetch(date=date)
@@ -136,7 +155,7 @@ def run_pipeline(
     destination: str = "filesystem",
     dataset_name: str = "nasdaq_earnings",
     **kwargs,
-) -> dlt.pipeline.LoadInfo:
+) -> "LoadInfo":
     """
     Convenience function to run the earnings calendar pipeline.
 

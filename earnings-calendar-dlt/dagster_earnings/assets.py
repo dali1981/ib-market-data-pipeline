@@ -38,7 +38,7 @@ def nasdaq_earnings_assets(
     )
 
     # The dlt source will be executed by the Dagster dlt integration
-    yield from dlt_resource.load()
+    yield from dlt_resource.run(context=context)
 
     context.log.info("Earnings calendar materialization complete")
 

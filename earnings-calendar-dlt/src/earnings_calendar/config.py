@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field
 class EarningsScraperConfig(BaseModel):
     """Configuration for earnings calendar scraper."""
 
+    backend: str = Field(
+        default="curlcffi",
+        description="Scraper backend to use (curlcffi, playwright, api)",
+    )
     days_ahead: int = Field(
         default=30,
         description="Number of days ahead to fetch earnings data",
@@ -22,6 +26,10 @@ class EarningsScraperConfig(BaseModel):
         description="Request timeout in seconds",
         ge=5,
         le=120,
+    )
+    impersonate: str = Field(
+        default="chrome120",
+        description="Browser to impersonate for curl_cffi (chrome120, safari15_5, etc.)",
     )
 
 
@@ -64,9 +72,11 @@ class EarningsCalendarConfig(BaseModel):
         Load configuration from environment variables.
 
         Environment variables:
+            EARNINGS_SCRAPER_BACKEND: Scraper backend (curlcffi, playwright, api)
             EARNINGS_DAYS_AHEAD: Number of days ahead to fetch
             EARNINGS_PLAYWRIGHT_FALLBACK: Use Playwright fallback (true/false)
             EARNINGS_TIMEOUT: Request timeout in seconds
+            EARNINGS_IMPERSONATE: Browser to impersonate for curl_cffi
             EARNINGS_DESTINATION: DLT destination type
             EARNINGS_DATASET_NAME: Dataset name
             EARNINGS_BUCKET_URL: Bucket URL for filesystem destination
@@ -77,10 +87,12 @@ class EarningsCalendarConfig(BaseModel):
         import os
 
         scraper_config = EarningsScraperConfig(
+            backend=os.getenv("EARNINGS_SCRAPER_BACKEND", "curlcffi"),
             days_ahead=int(os.getenv("EARNINGS_DAYS_AHEAD", "30")),
             use_playwright_fallback=os.getenv("EARNINGS_PLAYWRIGHT_FALLBACK", "true").lower()
             == "true",
             timeout=int(os.getenv("EARNINGS_TIMEOUT", "30")),
+            impersonate=os.getenv("EARNINGS_IMPERSONATE", "chrome120"),
         )
 
         dlt_config = EarningsDltConfig(

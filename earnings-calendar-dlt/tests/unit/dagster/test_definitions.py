@@ -20,7 +20,7 @@ def test_definitions_structure():
     assert len(defs.schedules) == 3  # Three schedule definitions
 
     # Check resources are defined
-    assert "dlt" in defs.resources
+    assert "dlt_resource" in defs.resources
 
 
 def test_asset_names():

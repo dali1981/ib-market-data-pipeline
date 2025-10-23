@@ -69,8 +69,9 @@ def test_calculate_surprise_pct():
     # Positive surprise
     assert _calculate_surprise_pct(1.5, 1.0) == 50.0
 
-    # Negative surprise
-    assert _calculate_surprise_pct(0.8, 1.0) == -20.0
+    # Negative surprise (use approximate equality for float comparison)
+    result = _calculate_surprise_pct(0.8, 1.0)
+    assert result is not None and abs(result - (-20.0)) < 0.01
 
     # Zero forecast
     assert _calculate_surprise_pct(1.0, 0) is None
@@ -104,7 +105,9 @@ def test_normalize_earnings_record():
     assert normalized["eps_forecast"] == 1.50
     assert normalized["eps_actual"] == 1.65
     assert normalized["eps_surprise"] is None  # Not in raw
-    assert normalized["eps_surprise_pct"] == 10.0  # Calculated
+    # Calculated surprise percentage (use approximate equality)
+    assert normalized["eps_surprise_pct"] is not None
+    assert abs(normalized["eps_surprise_pct"] - 10.0) < 0.01
     assert normalized["market_cap"] == 3.5e12
     assert normalized["num_estimates"] == 25
     assert normalized["snapshot_date"] == "2025-10-21"
