@@ -66,8 +66,8 @@ def ticker_contracts(context: AssetExecutionContext) -> Output[pd.DataFrame]:
         host=ib_config.host,
         port=ib_config.port,
         client_id=ib_config.client_id,
-        ready_timeout=ib_config.ready_timeout,
     )
+    runtime.start(ready_timeout=ib_config.ready_timeout)
 
     cache = ContractCache(config.cache_path)
     resolver = ContractResolver(runtime, cache)
@@ -98,7 +98,7 @@ def ticker_contracts(context: AssetExecutionContext) -> Output[pd.DataFrame]:
                 context.log.warning(f"✗ Failed to resolve {ticker}")
 
     finally:
-        runtime.close()
+        runtime.stop()
 
     if not resolved_contracts:
         raise ValueError("No contracts were successfully resolved")
