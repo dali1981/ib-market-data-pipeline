@@ -5,6 +5,7 @@ from .parquet_reader import ParquetReaderBase
 from .option_chain import OptionChainSnapshotReader
 from .option_bars import OptionBarsReader
 from .equity_bars import EquityBarsReader
+from .selected_contracts import SelectedContractsReader
 
 __all__ = [
     "BaseReader",
@@ -12,4 +13,5 @@ __all__ = [
     "OptionChainSnapshotReader",
     "OptionBarsReader",
     "EquityBarsReader",
+    "SelectedContractsReader",
 ]

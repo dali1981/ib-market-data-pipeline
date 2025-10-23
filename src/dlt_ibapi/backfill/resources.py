@@ -642,3 +642,346 @@ def equity_bars_backfill_source(
         )
 
     return resources
+
+
+@dlt.resource(
+    name="contract_descriptions",
+    write_disposition="replace",
+    primary_key=["symbol", "conid"],
+)
+def resolve_contracts_resource(
+    tickers: List[str],
+    cache_path: str = ".dlt-ibapi/cache",
+    connection_config: Optional[IBConnectionConfig] = None,
+) -> Iterator[dict]:
+    """
+    DLT resource for resolving ticker symbols to IB contracts.
+
+    Uses ContractResolver to resolve symbols and stores both contract
+    descriptions (from MatchingSymbol) and details (from ContractDetails).
+
+    Write disposition: replace (full refresh for each run)
+    Primary key: [symbol, conid]
+
+    Args:
+        tickers: List of ticker symbols to resolve
+        cache_path: Path to contract cache
+        connection_config: IB connection config (auto-loads if None)
+
+    Yields:
+        Contract description and detail records
+    """
+    import logging
+    log = logging.getLogger("dlt_ibapi.resolve_contracts")
+
+    runtime = _get_runtime(connection_config)
+    cache = ContractCache(cache_path)
+    resolver = ContractResolver(runtime, cache)
+
+    try:
+        for ticker in tickers:
+            log.info(f"Resolving {ticker}")
+
+            try:
+                # Resolve using ContractResolver
+                contract_info = resolver.resolve_symbol(
+                    symbol=ticker,
+                    exchange="SMART",
+                    currency="USD",
+                    sec_type="STK",
+                    use_cache=True,
+                    save_to_cache=True,
+                )
+
+                if not contract_info:
+                    log.warning(f"Could not resolve {ticker}")
+                    continue
+
+                # Yield contract record
+                yield {
+                    "symbol": ticker.upper(),
+                    "conid": contract_info.get("conid"),
+                    "local_symbol": contract_info.get("local_symbol"),
+                    "sec_type": contract_info.get("sec_type", "STK"),
+                    "exchange": contract_info.get("exchange"),
+                    "primary_exchange": contract_info.get("primary_exchange"),
+                    "currency": contract_info.get("currency", "USD"),
+                    "trading_class": contract_info.get("trading_class"),
+                    "long_name": contract_info.get("long_name"),
+                    "industry": contract_info.get("industry"),
+                    "category": contract_info.get("category"),
+                    "subcategory": contract_info.get("subcategory"),
+                }
+
+                log.info(f"✓ {ticker}: conid={contract_info.get('conid')}")
+
+            except Exception as e:
+                log.error(f"✗ {ticker}: {e}")
+                continue
+
+    finally:
+        runtime.stop()
+
+
+@dlt.resource(
+    name="selected_option_contracts",
+    write_disposition="replace",
+    primary_key=["underlying", "expiry", "strike", "right", "strategy"],
+    columns={
+        "snapshot_date": {"partition": True},
+        "underlying": {"partition": True},
+    }
+)
+def select_option_contracts_resource(
+    symbols: List[str],
+    snapshot_date: date,
+    database_path: str,
+    dataset_name_stocks: str = "stocks",
+    dataset_name_chains: str = "option_chains",
+    cache_path: str = ".dlt-ibapi/cache",
+    connection_config: Optional[IBConnectionConfig] = None,
+    target_deltas: Optional[List[Tuple[str, float]]] = None,
+    strategies: Optional[List[str]] = None,
+    num_expirations: int = 3,
+) -> Iterator[dict]:
+    """
+    DLT resource for selecting and resolving option contracts using delta strategies.
+
+    Workflow:
+    1. Read option chains from Parquet
+    2. Read stock prices from Parquet
+    3. Apply delta selection strategies
+    4. Resolve selected strikes to IB contracts
+    5. Yield contract records
+
+    Write disposition: replace (full refresh for each snapshot date)
+    Primary key: [underlying, expiry, strike, right, strategy]
+
+    Args:
+        symbols: List of underlying symbols
+        snapshot_date: Snapshot date used for chains
+        database_path: Path to DLT database
+        dataset_name_stocks: Dataset name for stock data
+        dataset_name_chains: Dataset name for option chains
+        cache_path: Path to contract cache
+        connection_config: IB connection config
+        target_deltas: List of (right, delta) tuples (e.g., [("C", 0.30), ("P", -0.30)])
+        strategies: List of strategies to use (default: ["closest_match", "black_scholes"])
+        num_expirations: Number of expirations to process per symbol (default: 3)
+
+    Yields:
+        Selected option contract records with resolution details
+    """
+    import logging
+
+    log = logging.getLogger("dlt_ibapi.select_option_contracts")
+
+    # Default strategies and deltas
+    if strategies is None:
+        strategies = ["closest_match", "black_scholes"]
+
+    if target_deltas is None:
+        # Default to call deltas (0.30, 0.50, 0.70)
+        # Puts will be handled by converting to negative in selection logic
+        target_deltas = [
+            ("C", 0.30),
+            ("C", 0.50),
+            ("C", 0.70),
+            ("P", -0.30),
+            ("P", -0.50),
+            ("P", -0.70),
+        ]
+
+    stock_reader = EquityBarsReader(database_path, dataset_name_stocks)
+    chain_reader = OptionChainSnapshotReader(database_path, dataset_name_chains)
+
+    runtime = _get_runtime(connection_config)
+
+    from ib_connector import ContractDetailsService
+    details_service = ContractDetailsService(runtime)
+
+    try:
+        for symbol in symbols:
+            log.info(f"Selecting contracts for {symbol}")
+
+            # Get latest stock price
+            try:
+                stock_data = stock_reader.get_bars(
+                    symbol=symbol,
+                    bar_size="1 day",
+                    start_date=snapshot_date - timedelta(days=5),
+                    end_date=snapshot_date,
+                )
+
+                if stock_data.empty:
+                    log.warning(f"No stock data for {symbol}, skipping")
+                    continue
+
+                spot_price = stock_data.iloc[-1]["close"]
+                log.info(f"{symbol} spot price: ${spot_price:.2f}")
+
+            except Exception as e:
+                log.error(f"Error getting price for {symbol}: {e}")
+                continue
+
+            # Get option chain
+            try:
+                chain = chain_reader.get_chain_for_date(
+                    underlying=symbol,
+                    as_of=snapshot_date,
+                )
+
+                if chain.empty:
+                    log.warning(f"No option chain for {symbol}, skipping")
+                    continue
+
+            except Exception as e:
+                log.error(f"Error loading chain for {symbol}: {e}")
+                continue
+
+            # Get expirations
+            expirations = chain_reader.get_available_expirations(
+                underlying=symbol,
+                as_of=snapshot_date,
+            )
+
+            if not expirations:
+                log.warning(f"No expirations found for {symbol}")
+                continue
+
+            # Process each expiration
+            for expiry in expirations[:num_expirations]:
+                strikes = chain_reader.get_strikes_for_expiry(
+                    underlying=symbol,
+                    as_of=snapshot_date,
+                    expiry=expiry,
+                )
+
+                if not strikes:
+                    continue
+
+                log.info(f"{symbol} {expiry}: {len(strikes)} strikes available")
+
+                # Apply each strategy
+                for strategy in strategies:
+                    try:
+                        # Select contracts using strategy
+                        # Collect call and put target deltas
+                        call_deltas = [d for (right, d) in target_deltas if right == "C"]
+                        put_deltas = [d for (right, d) in target_deltas if right == "P"]
+
+                        selected = []
+
+                        # Select calls
+                        if call_deltas and strategy == "closest_match":
+                            from dlt_ibapi.backfill.contract_selection import select_k_around_atm
+                            # Simple: select strikes around ATM
+                            k = len(call_deltas)
+                            call_strikes = select_k_around_atm(strikes, spot_price, k)
+                            for strike in call_strikes:
+                                selected.append({
+                                    "strike": strike,
+                                    "right": "C",
+                                    "delta": None,
+                                    "reason": f"closest_match_call"
+                                })
+
+                        elif call_deltas and strategy == "black_scholes":
+                            from dlt_ibapi.backfill.contract_selection import select_by_delta
+                            call_strikes = select_by_delta(
+                                strikes=strikes,
+                                spot_price=spot_price,
+                                expiry=expiry,
+                                as_of=snapshot_date,
+                                target_deltas=call_deltas,
+                                option_type="C",
+                            )
+                            for strike in call_strikes:
+                                selected.append({
+                                    "strike": strike,
+                                    "right": "C",
+                                    "delta": None,  # Could calculate if needed
+                                    "reason": f"black_scholes_call"
+                                })
+
+                        # Select puts
+                        if put_deltas and strategy == "closest_match":
+                            from dlt_ibapi.backfill.contract_selection import select_k_around_atm
+                            k = len(put_deltas)
+                            put_strikes = select_k_around_atm(strikes, spot_price, k)
+                            for strike in put_strikes:
+                                selected.append({
+                                    "strike": strike,
+                                    "right": "P",
+                                    "delta": None,
+                                    "reason": f"closest_match_put"
+                                })
+
+                        elif put_deltas and strategy == "black_scholes":
+                            from dlt_ibapi.backfill.contract_selection import select_by_delta
+                            put_strikes = select_by_delta(
+                                strikes=strikes,
+                                spot_price=spot_price,
+                                expiry=expiry,
+                                as_of=snapshot_date,
+                                target_deltas=[abs(d) for d in put_deltas],  # Use absolute values
+                                option_type="P",
+                            )
+                            for strike in put_strikes:
+                                selected.append({
+                                    "strike": strike,
+                                    "right": "P",
+                                    "delta": None,
+                                    "reason": f"black_scholes_put"
+                                })
+
+                        # Resolve each contract to IB contract details
+                        for contract in selected:
+                            opt_contract = make_option(
+                                symbol=symbol,
+                                lastTradeDateOrContractMonth=expiry.strftime("%Y%m%d"),
+                                strike=contract["strike"],
+                                right=contract["right"],
+                                exchange="SMART",
+                            )
+
+                            try:
+                                details_results = details_service.fetch(opt_contract, timeout=10.0)
+
+                                if details_results:
+                                    detail = details_results[0]
+                                    yield {
+                                        "underlying": symbol.upper(),
+                                        "expiry": expiry,
+                                        "strike": contract["strike"],
+                                        "right": contract["right"],
+                                        "conid": detail.contract.conId,
+                                        "local_symbol": detail.contract.localSymbol,
+                                        "exchange": detail.contract.exchange,
+                                        "trading_class": detail.contract.tradingClass,
+                                        "multiplier": detail.multiplier,
+                                        "strategy": strategy,
+                                        "delta": contract.get("delta"),
+                                        "reason": contract.get("reason", ""),
+                                        "spot_price": spot_price,
+                                        "snapshot_date": snapshot_date,
+                                    }
+                                else:
+                                    log.warning(
+                                        f"No contract details for {symbol} {expiry} "
+                                        f"{contract['strike']}{contract['right']}"
+                                    )
+
+                            except Exception as e:
+                                log.error(
+                                    f"Failed to resolve {symbol} {expiry} "
+                                    f"{contract['strike']}{contract['right']}: {e}"
+                                )
+                                continue
+
+                    except Exception as e:
+                        log.error(f"Error selecting contracts with {strategy}: {e}")
+                        continue
+
+    finally:
+        runtime.stop()

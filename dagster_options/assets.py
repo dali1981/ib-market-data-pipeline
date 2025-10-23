@@ -25,7 +25,7 @@ from dlt_ibapi.backfill.config import OptionBackfillConfig, ContractSelectionMod
 
 from dagster_options.config import get_default_config, OptionsPipelineConfig
 from dagster_options.ticker_input import load_tickers
-from dagster_options.selection_strategies import select_option_contracts
+from dagster_options.selection_strategies import select_option_contracts as select_contracts_by_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -38,149 +38,64 @@ logger = logging.getLogger(__name__)
 @asset(
     name="ticker_contracts",
     group_name="options_pipeline",
-    description="Resolve ticker symbols to IB contracts (descriptions + details)",
-    compute_kind="ib_api",
+    description="Resolve ticker symbols to IB contracts via DLT",
+    compute_kind="dlt",
 )
-def ticker_contracts(context: AssetExecutionContext) -> Output[Dict[str, pd.DataFrame]]:
+def ticker_contracts(context: AssetExecutionContext) -> Output[Dict[str, Any]]:
     """
-    Resolve ticker symbols to IB contracts using both MatchingSymbol and ContractDetails.
+    Resolve ticker symbols to IB contracts using DLT resource.
 
     Workflow:
     1. Load ticker list from configured source
-    2. For each ticker:
-       a. Call MatchingSymbolService -> get contract descriptions (includes derivatives)
-       b. Call ContractDetailsService -> get full contract details
-    3. Return two separate DataFrames: descriptions and details
+    2. Use resolve_contracts_resource DLT resource
+    3. Store contracts in Parquet via DLT
+    4. Return summary statistics
 
     Returns:
-        Dict with two DataFrames:
-        - 'descriptions': Contract descriptions (symbol, conid, derivatives_list)
-        - 'details': Full contract details (all contract specifications)
+        Dict with summary info:
+        - 'tickers_resolved': List of resolved tickers
+        - 'num_tickers': Count of tickers processed
     """
+    from dlt_ibapi.backfill.resources import resolve_contracts_resource
+
     config = get_default_config()
 
     context.log.info("Loading ticker list")
     tickers = load_tickers(config.ticker_source)
     context.log.info(f"Loaded {len(tickers)} tickers: {', '.join(tickers)}")
 
-    # Initialize IB runtime with unique client_id for this asset
-    ib_config = get_connection_config()
-    client_id = ib_config.client_id  # Use client_id 1 for ticker_contracts
-    context.log.info(
-        f"Connecting to IB Gateway at {ib_config.host}:{ib_config.port} "
-        f"(client_id={client_id})"
+    # Create DLT pipeline
+    pipeline = dlt.pipeline(
+        pipeline_name="contract_resolution",
+        destination="filesystem",
+        dataset_name="contracts",
     )
 
-    runtime = IBRuntime(
-        host=ib_config.host,
-        port=ib_config.port,
-        client_id=client_id,
+    context.log.info(f"Resolving {len(tickers)} tickers via DLT")
+
+    # Use DLT resource from library
+    resource = resolve_contracts_resource(
+        tickers=tickers,
+        cache_path=config.cache_path,
+        connection_config=get_connection_config(),
     )
-    runtime.start(ready_timeout=ib_config.ready_timeout)
 
-    # Initialize services
-    matching_service = MatchingSymbolService(runtime)
-    details_service = ContractDetailsService(runtime)
+    # Run pipeline
+    load_info = pipeline.run(resource)
 
-    contract_descriptions = []
-    contract_details = []
-
-    try:
-        for ticker in tickers:
-            context.log.info(f"Resolving {ticker}")
-
-            # Step 1: Get contract descriptions (includes derivatives info)
-            try:
-                desc_results = matching_service.fetch(ticker, timeout=10.0)
-
-                if desc_results:
-                    for desc in desc_results:
-                        # desc is a dict with keys: 'contract' and 'derivativeSecTypes'
-                        contract = desc["contract"]
-                        derivatives = desc.get("derivativeSecTypes", [])
-
-                        contract_descriptions.append({
-                            "symbol": ticker,
-                            "conid": contract.conId,
-                            "sec_type": contract.secType,
-                            "exchange": contract.exchange,
-                            "currency": contract.currency,
-                            "description": contract.description,
-                            "derivatives": ",".join(derivatives) if derivatives else "",
-                            "has_options": "OPT" in (derivatives or []),
-                        })
-
-                    context.log.info(
-                        f"✓ {ticker}: Found {len(desc_results)} matches, "
-                        f"derivatives: {desc_results[0].get('derivativeSecTypes', [])})"
-                    )
-                else:
-                    context.log.warning(f"✗ {ticker}: No matching symbols found")
-                    continue
-
-            except Exception as e:
-                context.log.error(f"✗ {ticker}: MatchingSymbol error: {e}")
-                continue
-
-            # Step 2: Get full contract details for the first match
-            if desc_results:
-                try:
-                    # Use the contract from first description (dict with 'contract' key)
-                    first_contract = desc_results[0]["contract"]
-                    details_results = details_service.fetch(first_contract, timeout=10.0)
-
-                    if details_results:
-                        for detail in details_results:
-                            contract_details.append({
-                                "symbol": ticker,
-                                "conid": detail.contract.conId,
-                                "local_symbol": detail.contract.localSymbol,
-                                "sec_type": detail.contract.secType,
-                                "exchange": detail.contract.exchange,
-                                "primary_exchange": detail.contract.primaryExchange,
-                                "currency": detail.contract.currency,
-                                "trading_class": detail.contract.tradingClass,
-                                "long_name": detail.longName,
-                                "industry": detail.industry,
-                                "category": detail.category,
-                                "subcategory": detail.subcategory,
-                                "min_tick": detail.minTick,
-                                "price_magnifier": detail.priceMagnifier,
-                                "market_name": detail.marketName,
-                                "valid_exchanges": detail.validExchanges,
-                            })
-
-                        context.log.info(f"✓ {ticker}: Got {len(details_results)} contract details")
-
-                except Exception as e:
-                    context.log.error(f"✗ {ticker}: ContractDetails error: {e}")
-
-    finally:
-        runtime.stop()
-
-    if not contract_descriptions:
-        raise ValueError("No contracts were successfully resolved")
-
-    # Convert to DataFrames
-    descriptions_df = pd.DataFrame(contract_descriptions)
-    details_df = pd.DataFrame(contract_details)
-
-    context.log.info(
-        f"Resolved {len(descriptions_df)} descriptions and {len(details_df)} details "
-        f"for {len(tickers)} tickers"
-    )
+    context.log.info(f"✓ Contract resolution complete")
+    context.log.info(f"Load info: {load_info}")
 
     return Output(
         value={
-            "descriptions": descriptions_df,
-            "details": details_df,
+            "tickers_resolved": tickers,
+            "num_tickers": len(tickers),
         },
         metadata={
             "num_tickers": len(tickers),
-            "num_descriptions": len(descriptions_df),
-            "num_details": len(details_df),
-            "success_rate": f"{len(descriptions_df) / len(tickers) * 100:.1f}%",
-            "tickers_with_options": int(descriptions_df["has_options"].sum()) if len(descriptions_df) > 0 else 0,
+            "tickers": ", ".join(tickers),
+            "pipeline_name": "contract_resolution",
+            "dataset_name": "contracts",
         },
     )
 
@@ -198,13 +113,13 @@ def ticker_contracts(context: AssetExecutionContext) -> Output[Dict[str, pd.Data
 )
 def stock_historical_data(
     context: AssetExecutionContext,
-    ticker_contracts: Dict[str, pd.DataFrame],
+    ticker_contracts: Dict[str, Any],
 ) -> Output[Dict[str, Any]]:
     """
     Fetch historical stock data using DLT with gap detection.
 
     Workflow:
-    1. For each resolved contract
+    1. For each resolved ticker
     2. Use backfill_equity_bars DLT resource
     3. Detect and fill gaps in existing data
     4. Store in Parquet format
@@ -214,11 +129,11 @@ def stock_historical_data(
     """
     config = get_default_config()
 
-    # Extract descriptions DataFrame
-    descriptions_df = ticker_contracts["descriptions"]
+    # Extract tickers from upstream asset
+    symbols = ticker_contracts["tickers_resolved"]
 
     context.log.info(
-        f"Fetching stock data for {len(descriptions_df)} symbols "
+        f"Fetching stock data for {len(symbols)} symbols "
         f"({config.stock_config.lookback_days} days lookback)"
     )
 
@@ -241,9 +156,7 @@ def stock_historical_data(
         ready_timeout=ib_config.ready_timeout,
     )
 
-    for _, contract in descriptions_df.iterrows():
-        symbol = contract["symbol"]
-
+    for symbol in symbols:
         context.log.info(f"Processing {symbol}")
 
         # Create DLT resource for this symbol with custom client_id
@@ -291,13 +204,13 @@ def stock_historical_data(
 )
 def option_chain_snapshots(
     context: AssetExecutionContext,
-    ticker_contracts: Dict[str, pd.DataFrame],
+    ticker_contracts: Dict[str, Any],
 ) -> Output[Dict[str, Any]]:
     """
     Capture option chain snapshots for each ticker.
 
     Workflow:
-    1. For each resolved contract
+    1. For each resolved ticker
     2. Use snapshot_option_chain DLT resource
     3. Fetch available expirations and strikes
     4. Apply DTE filters
@@ -309,13 +222,12 @@ def option_chain_snapshots(
     config = get_default_config()
     snapshot_date = config.get_snapshot_date()
 
-    # Extract descriptions DataFrame (only process tickers with options)
-    descriptions_df = ticker_contracts["descriptions"]
-    tickers_with_options = descriptions_df[descriptions_df["has_options"] == True]
+    # Extract tickers from upstream asset
+    # Note: We process all tickers; snapshot_option_chain will skip those without options
+    symbols = ticker_contracts["tickers_resolved"]
 
     context.log.info(
-        f"Capturing option chains for {len(tickers_with_options)} symbols with options "
-        f"(out of {len(descriptions_df)} total symbols)"
+        f"Capturing option chains for {len(symbols)} symbols "
         f"(snapshot_date={snapshot_date}, DTE={config.chain_config.min_dte}-{config.chain_config.max_dte})"
     )
 
@@ -337,9 +249,7 @@ def option_chain_snapshots(
 
     chains_captured = []
 
-    for _, contract in tickers_with_options.iterrows():
-        symbol = contract["symbol"]
-
+    for symbol in symbols:
         context.log.info(f"Fetching option chain for {symbol}")
 
         # Create DLT resource for this symbol
@@ -388,42 +298,54 @@ def option_chain_snapshots(
 @asset(
     name="select_option_contracts",
     group_name="options_pipeline",
-    description="Select option contracts using multiple delta strategies and resolve to IB contracts",
-    compute_kind="ib_api",
+    description="Select option contracts using delta strategies via DLT",
+    compute_kind="dlt",
 )
 def select_option_contracts(
     context: AssetExecutionContext,
-    ticker_contracts: Dict[str, pd.DataFrame],  # TODO: Refactor to single DataFrame instead of Dict
+    ticker_contracts: Dict[str, Any],
     stock_historical_data: Dict[str, Any],
     option_chain_snapshots: Dict[str, Any],
-) -> Output[pd.DataFrame]:
+) -> Output[Dict[str, Any]]:
     """
-    Select option contracts using all enabled delta strategies.
+    Select and resolve option contracts using DLT resource.
 
     Workflow:
-    1. For each ticker with option chain
-    2. Get latest stock price
-    3. Load option chain snapshot
-    4. Apply all enabled selection strategies:
-       - Closest match (simple heuristic)
-       - Black-Scholes calculated
-       - IB API greeks (if enabled)
-    5. Tag contracts with selection method
-    6. Return consolidated DataFrame
+    1. Use select_option_contracts_resource from library
+    2. Resource reads stock prices and option chains from Parquet
+    3. Applies delta strategies (closest_match, black_scholes)
+    4. Resolves contracts via IB API
+    5. Stores selected contracts in Parquet via DLT
 
     Returns:
-        DataFrame with columns: underlying, expiry, strike, right, strategy, delta
+        Dict with summary statistics
     """
+    from dlt_ibapi.backfill.resources import select_option_contracts_resource
+
     config = get_default_config()
+    snapshot_date = config.get_snapshot_date()
+    symbols = option_chain_snapshots["chains_captured"]
 
-    context.log.info("Selecting option contracts using delta strategies")
+    context.log.info(f"Selecting contracts for {len(symbols)} symbols using DLT")
 
-    # Initialize readers
-    stock_reader = EquityBarsReader(config.database_path, config.stock_dataset)
-    chain_reader = OptionChainSnapshotReader(config.database_path, config.chain_dataset)
+    # Determine strategies to use
+    strategies = []
+    if config.enable_closest_match:
+        strategies.append("closest_match")
+    if config.enable_calculated_delta:
+        strategies.append("black_scholes")
 
-    # Initialize IB Gateway connection for contract resolution
-    # Use client_id 4 for option contract resolution
+    context.log.info(f"Using strategies: {strategies}")
+
+    # Create DLT pipeline
+    pipeline = dlt.pipeline(
+        pipeline_name="selected_option_contracts",
+        destination="filesystem",
+        dataset_name="selected_contracts",
+    )
+
+    # Use DLT resource from library
+    # Use client_id 4 for option contract selection
     ib_config = get_connection_config()
     option_ib_config = IBConnectionConfig(
         host=ib_config.host,
@@ -432,195 +354,43 @@ def select_option_contracts(
         ready_timeout=ib_config.ready_timeout,
     )
 
-    context.log.info(
-        f"Connecting to IB Gateway for option contract resolution "
-        f"(client_id={option_ib_config.client_id})"
+    resource = select_option_contracts_resource(
+        symbols=symbols,
+        snapshot_date=snapshot_date,
+        database_path=config.database_path,
+        dataset_name_stocks=config.stock_dataset,
+        dataset_name_chains=config.chain_dataset,
+        cache_path=config.cache_path,
+        connection_config=option_ib_config,
+        target_deltas=[
+            ("C", delta) for delta in config.delta_config.target_deltas
+        ] + [
+            ("P", -delta) for delta in config.delta_config.target_deltas
+        ],
+        strategies=strategies,
+        num_expirations=3,
     )
 
-    runtime = IBRuntime(
-        host=option_ib_config.host,
-        port=option_ib_config.port,
-        client_id=option_ib_config.client_id,
+    # Run pipeline
+    load_info = pipeline.run(resource)
+
+    context.log.info(f"✓ Contract selection complete")
+    context.log.info(f"Load info: {load_info}")
+
+    return Output(
+        value={
+            "contracts_selected": True,
+            "symbols_processed": symbols,
+            "snapshot_date": snapshot_date,
+        },
+        metadata={
+            "num_symbols": len(symbols),
+            "snapshot_date": str(snapshot_date),
+            "strategies_used": strategies,
+            "pipeline_name": "selected_option_contracts",
+            "dataset_name": "selected_contracts",
+        },
     )
-    runtime.start(ready_timeout=option_ib_config.ready_timeout)
-
-    details_service = ContractDetailsService(runtime)
-
-    all_selected_contracts = []
-    contracts_resolved = 0
-    contracts_failed = 0
-
-    try:
-        # Process each symbol that has option chain
-        for symbol in option_chain_snapshots["chains_captured"]:
-            context.log.info(f"Selecting contracts for {symbol}")
-
-            # Get latest stock price
-            try:
-                stock_data = stock_reader.get_bars(
-                    symbol=symbol,
-                    bar_size=config.stock_config.bar_size,
-                    start_date=config.get_stock_end_date() - timedelta(days=5),
-                    end_date=config.get_stock_end_date(),
-                )
-
-                if stock_data.empty:
-                    context.log.warning(f"No stock data for {symbol}, skipping")
-                    continue
-
-                latest_price = stock_data.iloc[-1]["close"]
-                context.log.info(f"{symbol} latest price: ${latest_price:.2f}")
-
-            except Exception as e:
-                context.log.error(f"Error getting price for {symbol}: {e}")
-                continue
-
-            # Load option chain
-            try:
-                chain = chain_reader.get_chain_for_date(
-                    underlying=symbol,
-                    as_of=config.get_snapshot_date(),
-                    min_dte=config.chain_config.min_dte,
-                    max_dte=config.chain_config.max_dte,
-                )
-
-                if chain.empty:
-                    context.log.warning(f"No option chain for {symbol}, skipping")
-                    continue
-
-            except Exception as e:
-                context.log.error(f"Error loading chain for {symbol}: {e}")
-                continue
-
-            # Get available expirations and strikes
-            expirations = chain_reader.get_available_expirations(
-                underlying=symbol,
-                as_of=config.get_snapshot_date(),
-                min_dte=config.chain_config.min_dte,
-                max_dte=config.chain_config.max_dte,
-            )
-
-            if not expirations:
-                context.log.warning(f"No expirations found for {symbol}")
-                continue
-
-            # Process each expiration
-            for expiry in expirations[:3]:  # Limit to first 3 expirations
-                strikes = chain_reader.get_strikes_for_expiry(
-                    underlying=symbol,
-                    as_of=config.get_snapshot_date(),
-                    expiry=expiry,
-                )
-
-                if not strikes:
-                    continue
-
-                context.log.info(
-                    f"{symbol} {expiry}: {len(strikes)} strikes available"
-                )
-
-                # Apply each enabled strategy
-                strategies_to_run = []
-                if config.enable_closest_match:
-                    strategies_to_run.append("closest_match")
-                if config.enable_calculated_delta:
-                    strategies_to_run.append("black_scholes")
-                # Note: IB greeks requires live connection, skip for now
-                # if config.enable_ib_greeks:
-                #     strategies_to_run.append("ib_greeks")
-
-                for strategy in strategies_to_run:
-                    try:
-                        selected = select_option_contracts(
-                            strikes=strikes,
-                            spot_price=latest_price,
-                            expiry=expiry,
-                            as_of=config.get_snapshot_date(),
-                            config=config.delta_config,
-                            strategy=strategy,
-                        )
-
-                        # Resolve each selected strike to actual IB contract
-                        for contract in selected:
-                            # Create option contract specification
-                            opt_contract = make_option(
-                                symbol=symbol,
-                                lastTradeDateOrContractMonth=expiry.strftime("%Y%m%d"),
-                                strike=contract["strike"],
-                                right=contract["right"],
-                                exchange="SMART",
-                            )
-
-                            # Get contract details from IB Gateway
-                            try:
-                                details_results = details_service.fetch(opt_contract, timeout=10.0)
-
-                                if details_results:
-                                    detail = details_results[0]  # Use first match
-                                    all_selected_contracts.append({
-                                        "underlying": symbol,
-                                        "expiry": expiry,
-                                        "strike": contract["strike"],
-                                        "right": contract["right"],
-                                        "conid": detail.contract.conId,
-                                        "local_symbol": detail.contract.localSymbol,
-                                        "exchange": detail.contract.exchange,
-                                        "trading_class": detail.contract.tradingClass,
-                                        "multiplier": detail.multiplier,
-                                        "strategy": strategy,
-                                        "delta": contract.get("delta"),
-                                        "reason": contract["reason"],
-                                    })
-                                    contracts_resolved += 1
-                                else:
-                                    context.log.warning(
-                                        f"No contract details for {symbol} {expiry} "
-                                        f"{contract['strike']}{contract['right']}"
-                                    )
-                                    contracts_failed += 1
-                            except Exception as e:
-                                context.log.error(
-                                    f"Failed to resolve {symbol} {expiry} "
-                                    f"{contract['strike']}{contract['right']}: {e}"
-                                )
-                                contracts_failed += 1
-
-                        context.log.info(
-                            f"  {strategy}: selected {len(selected)} contracts, "
-                            f"resolved {contracts_resolved}, failed {contracts_failed}"
-                        )
-
-                    except Exception as e:
-                        context.log.error(
-                            f"Error in {strategy} for {symbol} {expiry}: {e}"
-                        )
-
-        if not all_selected_contracts:
-            raise ValueError("No option contracts were selected")
-
-        df = pd.DataFrame(all_selected_contracts)
-
-        context.log.info(
-            f"Selected {len(df)} total option contracts "
-            f"across {df['underlying'].nunique()} symbols "
-            f"(resolved: {contracts_resolved}, failed: {contracts_failed})"
-        )
-
-        return Output(
-            value=df,
-            metadata={
-                "total_contracts": len(df),
-                "num_symbols": df["underlying"].nunique(),
-                "contracts_resolved": contracts_resolved,
-                "contracts_failed": contracts_failed,
-                "strategies_used": list(df["strategy"].unique()),
-                "contracts_by_strategy": df["strategy"].value_counts().to_dict(),
-                "calls_vs_puts": df["right"].value_counts().to_dict(),
-            },
-        )
-
-    finally:
-        runtime.stop()
 
 
 # ============================================================================
@@ -636,77 +406,119 @@ def select_option_contracts(
 )
 def option_historical_data(
     context: AssetExecutionContext,
-    select_option_contracts: pd.DataFrame,
+    select_option_contracts: Dict[str, Any],
 ) -> Output[Dict[str, Any]]:
     """
-    Fetch historical data for selected option contracts.
+    Fetch historical data for selected option contracts using DLT.
 
     Workflow:
-    1. For each selected contract (underlying, expiry, strike, right)
-    2. Use backfill_option_bars logic
-    3. Fetch bars for lookback period (default 7 days)
-    4. Apply gap detection
+    1. Read selected contracts from Parquet
+    2. Group by underlying symbol
+    3. For each symbol, use backfill_option_bars DLT resource
+    4. Detect and fill gaps in existing data
     5. Store in Parquet with partitioning
 
     Returns:
         Summary statistics dictionary
     """
-    config = get_default_config()
+    from dlt_ibapi.repositories.selected_contracts import SelectedContractsReader
+    from dlt_ibapi.repositories.equity_bars import EquityBarsReader
+    from dlt_ibapi.backfill.config import OptionBackfillConfig
 
-    context.log.info(
-        f"Fetching option data for {len(select_option_contracts)} contracts "
-        f"({config.option_config.lookback_days} days lookback)"
+    config = get_default_config()
+    snapshot_date = select_option_contracts["snapshot_date"]
+
+    # Read selected contracts from Parquet
+    contracts_reader = SelectedContractsReader(config.database_path, "selected_contracts")
+    selected_contracts = contracts_reader.get_all_contracts(snapshot_date=snapshot_date)
+
+    if selected_contracts.empty:
+        context.log.warning("No selected contracts found")
+        return Output(
+            value={"contracts_processed": 0},
+            metadata={"num_contracts": 0},
+        )
+
+    context.log.info(f"Fetching option data for {len(selected_contracts)} contracts")
+
+    # Read stock prices for spot price
+    stock_reader = EquityBarsReader(config.database_path, config.stock_dataset)
+
+    # Create DLT pipeline
+    pipeline = dlt.pipeline(
+        pipeline_name="option_historical_data",
+        destination="filesystem",
+        dataset_name=config.option_dataset,
     )
 
-    # Group by underlying for efficient processing
-    grouped = select_option_contracts.groupby("underlying")
+    # Use client_id 5 for option historical data
+    ib_config = get_connection_config()
+    option_hist_ib_config = IBConnectionConfig(
+        host=ib_config.host,
+        port=ib_config.port,
+        client_id=ib_config.client_id + 4,  # client_id 5
+        ready_timeout=ib_config.ready_timeout,
+    )
 
-    total_records = 0
+    # Group by underlying
+    symbols = selected_contracts["underlying"].unique()
     contracts_processed = 0
 
-    for underlying, contracts in grouped:
-        context.log.info(f"Processing {len(contracts)} contracts for {underlying}")
+    for symbol in symbols:
+        context.log.info(f"Processing {symbol}")
 
-        # Get spot price (use latest from contracts DataFrame if available)
-        # In production, would fetch from stock data
-        # For now, estimate from ATM strikes
-        atm_contracts = contracts[contracts["delta"].notna()]
-        if not atm_contracts.empty:
-            spot_price = atm_contracts["strike"].median()
-        else:
-            spot_price = contracts["strike"].median()
-
-        context.log.info(f"Using spot price ${spot_price:.2f} for {underlying}")
-
-        # Note: The backfill_option_bars resource expects to select contracts internally
-        # We'll need to adapt this to work with pre-selected contracts
-        # For now, log what would be processed
-
-        for _, contract in contracts.iterrows():
-            context.log.info(
-                f"  Would fetch: {underlying} {contract['expiry']} "
-                f"{contract['strike']}{contract['right']} ({contract['strategy']})"
+        # Get spot price from stock data
+        try:
+            stock_data = stock_reader.get_bars(
+                symbol=symbol,
+                bar_size=config.stock_config.bar_size,
+                start_date=config.get_stock_end_date() - timedelta(days=5),
+                end_date=config.get_stock_end_date(),
             )
-            contracts_processed += 1
 
-        # TODO: Implement actual data fetching
-        # This requires either:
-        # 1. Modifying backfill_option_bars to accept pre-selected contracts
-        # 2. Manually creating DLT resource for each contract
-        # 3. Using lower-level HistoricalService directly
+            if stock_data.empty:
+                context.log.warning(f"No stock data for {symbol}, skipping")
+                continue
 
-    context.log.info(
-        f"Processed {contracts_processed} option contracts"
-    )
+            spot_price = stock_data.iloc[-1]["close"]
+            context.log.info(f"{symbol} spot price: ${spot_price:.2f}")
+
+        except Exception as e:
+            context.log.error(f"Error getting price for {symbol}: {e}")
+            continue
+
+        # Use backfill_option_bars resource
+        resource = backfill_option_bars(
+            underlying=symbol,
+            spot_price=spot_price,
+            database_path=config.database_path,
+            dataset_name=config.option_dataset,
+            cache_path=config.cache_path,
+            connection_config=option_hist_ib_config,
+            backfill_config=OptionBackfillConfig(
+                start_date=config.get_option_start_date(),
+                end_date=config.get_option_end_date(),
+                bar_size=config.option_config.bar_size,
+                what_to_show=config.option_config.what_to_show,
+                use_rth=config.option_config.use_rth,
+            ),
+        )
+
+        # Run pipeline
+        load_info = pipeline.run(resource)
+
+        symbol_contracts = selected_contracts[selected_contracts["underlying"] == symbol]
+        contracts_processed += len(symbol_contracts)
+        context.log.info(f"✓ {symbol}: {len(symbol_contracts)} contracts processed")
 
     return Output(
         value={
             "contracts_processed": contracts_processed,
-            "total_records": total_records,
+            "symbols_processed": list(symbols),
         },
         metadata={
             "num_contracts": contracts_processed,
-            "total_bars": total_records,
+            "num_symbols": len(symbols),
             "lookback_days": config.option_config.lookback_days,
             "bar_size": config.option_config.bar_size,
         },
