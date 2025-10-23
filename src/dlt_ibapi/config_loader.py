@@ -38,7 +38,7 @@ def get_user_config_path() -> Optional[Path]:
     """
     Get path to user config file in their project.
 
-    Searches for .dlt-ibapi/ib_gateway.yaml starting from current directory
+    Searches for .dlt-ibapi/config/ib_gateway.yaml starting from current directory
     and walking up to find project root.
 
     Returns:
@@ -48,7 +48,7 @@ def get_user_config_path() -> Optional[Path]:
 
     # Search current directory and parents
     for parent in [current] + list(current.parents):
-        config_path = parent / ".dlt-ibapi" / "ib_gateway.yaml"
+        config_path = parent / ".dlt-ibapi" / "config" / "ib_gateway.yaml"
         if config_path.exists():
             return config_path
 
@@ -58,7 +58,7 @@ def get_user_config_path() -> Optional[Path]:
 def load_config(user_config_path: Optional[Path] = None) -> DictConfig:
     """
     Load configuration with hierarchy:
-    1. User project config (.dlt-ibapi/ib_gateway.yaml)
+    1. User project config (.dlt-ibapi/config/ib_gateway.yaml)
     2. Environment variables
     3. Default package config
 
@@ -223,7 +223,7 @@ def create_user_config_template(target_dir: Optional[Path] = None) -> Path:
     Create a user config template in the specified directory.
 
     Args:
-        target_dir: Directory to create .dlt-ibapi/ in. Defaults to current directory.
+        target_dir: Directory to create .dlt-ibapi/config/ in. Defaults to current directory.
 
     Returns:
         Path to created config file
@@ -231,7 +231,7 @@ def create_user_config_template(target_dir: Optional[Path] = None) -> Path:
     if target_dir is None:
         target_dir = Path.cwd()
 
-    config_dir = target_dir / ".dlt-ibapi"
+    config_dir = target_dir / ".dlt-ibapi" / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
 
     config_file = config_dir / "ib_gateway.yaml"
