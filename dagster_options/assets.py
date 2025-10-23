@@ -8,7 +8,8 @@ import pandas as pd
 import dlt
 from dagster import asset, AssetExecutionContext, Output, MetadataValue
 
-from ib_connector import IBRuntime, IBConnectionConfig
+from ib_connector import IBRuntime
+from dlt_ibapi.config import IBConnectionConfig
 from dlt_ibapi.resolution.contract_cache import ContractCache
 from dlt_ibapi.resolution.resolver import ContractResolver
 from dlt_ibapi.repositories.equity_bars import EquityBarsReader

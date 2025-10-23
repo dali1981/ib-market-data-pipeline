@@ -15,7 +15,7 @@ import math
 import pandas as pd
 from scipy.stats import norm
 
-from ib_connector import IBRuntime, MarketDataService, make_option
+from ib_connector import IBRuntime, make_option
 from dlt_ibapi.resolution.contract_cache import ContractCache
 from dlt_ibapi.resolution.resolver import ContractResolver
 from dagster_options.config import DeltaSelectionConfig
@@ -230,7 +230,13 @@ def select_by_ib_greeks(
     """
     Select strikes using IB's calculated greeks.
 
-    Requests market data for each strike and filters by delta.
+    NOTE: This strategy is NOT IMPLEMENTED because:
+    - Requires live market data subscription (not snapshot)
+    - ib_connector only has SubscriptionService for streaming data
+    - Would need significant additional implementation
+    - Market data subscriptions are complex and require proper cleanup
+
+    This is a placeholder for future implementation.
 
     Args:
         runtime: IB runtime connection
@@ -245,75 +251,13 @@ def select_by_ib_greeks(
         timeout: Timeout for market data requests
 
     Returns:
-        List of (strike, reason, actual_delta) tuples
-
-    Note:
-        This method makes live market data requests and may be slow.
-        Rate limiting applies.
+        Empty list (not implemented)
     """
-    if not strikes:
-        return []
-
-    market_data_service = MarketDataService(runtime)
-    expiry_str = expiry.strftime("%Y%m%d")
-
-    # Request greeks for each strike
-    strike_greeks = []
-
-    for strike in strikes:
-        try:
-            # Create option contract
-            contract = make_option(
-                symbol=underlying_symbol,
-                expiry=expiry_str,
-                strike=strike,
-                right=option_type,
-                exchange=exchange,
-            )
-
-            # Request market data with greeks
-            # Note: This requires market data subscription
-            snapshot = market_data_service.snapshot(
-                contract,
-                timeout=timeout,
-                generic_tick_list="100",  # Request greeks
-            )
-
-            # Extract delta from snapshot
-            delta = getattr(snapshot, "modelGreeks", {}).get("delta", None)
-
-            if delta is not None:
-                strike_greeks.append((strike, delta))
-            else:
-                logger.warning(
-                    f"No delta available for {underlying_symbol} {expiry_str} {strike}{option_type}"
-                )
-
-        except Exception as e:
-            logger.error(
-                f"Error fetching greeks for {underlying_symbol} {strike}{option_type}: {e}"
-            )
-            continue
-
-    if not strike_greeks:
-        logger.warning(f"No greeks data available for {underlying_symbol} {expiry_str}")
-        return []
-
-    # Select strikes closest to target deltas
-    selected = []
-
-    for target in target_deltas:
-        candidates = [
-            (strike, delta) for strike, delta in strike_greeks
-            if abs(delta - target) <= tolerance
-        ]
-
-        if candidates:
-            best_strike, best_delta = min(candidates, key=lambda x: abs(x[1] - target))
-            reason = f"ib_greeks_delta_{abs(target):.2f}"
-            selected.append((best_strike, reason, best_delta))
-
-    return selected
+    logger.warning(
+        "IB Greeks strategy is not implemented. "
+        "Use 'closest_match' or 'black_scholes' instead."
+    )
+    return []
 
 
 # ============================================================================
