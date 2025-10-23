@@ -636,7 +636,7 @@ def select_option_contracts(
 )
 def option_historical_data(
     context: AssetExecutionContext,
-    selected_option_contracts: pd.DataFrame,
+    select_option_contracts: pd.DataFrame,
 ) -> Output[Dict[str, Any]]:
     """
     Fetch historical data for selected option contracts.
@@ -654,12 +654,12 @@ def option_historical_data(
     config = get_default_config()
 
     context.log.info(
-        f"Fetching option data for {len(selected_option_contracts)} contracts "
+        f"Fetching option data for {len(select_option_contracts)} contracts "
         f"({config.option_config.lookback_days} days lookback)"
     )
 
     # Group by underlying for efficient processing
-    grouped = selected_option_contracts.groupby("underlying")
+    grouped = select_option_contracts.groupby("underlying")
 
     total_records = 0
     contracts_processed = 0
