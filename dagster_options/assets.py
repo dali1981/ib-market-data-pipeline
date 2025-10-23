@@ -8,7 +8,7 @@ import pandas as pd
 import dlt
 from dagster import asset, AssetExecutionContext, Output, MetadataValue
 
-from ib_connector import IBRuntime, MatchingSymbolService, ContractDetailsService, make_stock
+from ib_connector import IBRuntime, MatchingSymbolService, ContractDetailsService, make_stock, make_option
 from dlt_ibapi.config import IBConnectionConfig
 from dlt_ibapi.config_loader import get_connection_config
 from dlt_ibapi.resolution.contract_cache import ContractCache
@@ -386,14 +386,14 @@ def option_chain_snapshots(
 
 
 @asset(
-    name="selected_option_contracts",
+    name="select_option_contracts",
     group_name="options_pipeline",
-    description="Select option contracts using multiple delta strategies",
-    compute_kind="python",
+    description="Select option contracts using multiple delta strategies and resolve to IB contracts",
+    compute_kind="ib_api",
 )
-def selected_option_contracts(
+def select_option_contracts(
     context: AssetExecutionContext,
-    ticker_contracts: pd.DataFrame,
+    ticker_contracts: Dict[str, pd.DataFrame],  # TODO: Refactor to single DataFrame instead of Dict
     stock_historical_data: Dict[str, Any],
     option_chain_snapshots: Dict[str, Any],
 ) -> Output[pd.DataFrame]:
@@ -422,137 +422,205 @@ def selected_option_contracts(
     stock_reader = EquityBarsReader(config.database_path, config.stock_dataset)
     chain_reader = OptionChainSnapshotReader(config.database_path, config.chain_dataset)
 
+    # Initialize IB Gateway connection for contract resolution
+    # Use client_id 4 for option contract resolution
+    ib_config = get_connection_config()
+    option_ib_config = IBConnectionConfig(
+        host=ib_config.host,
+        port=ib_config.port,
+        client_id=ib_config.client_id + 3,  # client_id 4
+        ready_timeout=ib_config.ready_timeout,
+    )
+
+    context.log.info(
+        f"Connecting to IB Gateway for option contract resolution "
+        f"(client_id={option_ib_config.client_id})"
+    )
+
+    runtime = IBRuntime(
+        host=option_ib_config.host,
+        port=option_ib_config.port,
+        client_id=option_ib_config.client_id,
+    )
+    runtime.start(ready_timeout=option_ib_config.ready_timeout)
+
+    details_service = ContractDetailsService(runtime)
+
     all_selected_contracts = []
+    contracts_resolved = 0
+    contracts_failed = 0
 
-    # Process each symbol that has option chain
-    for symbol in option_chain_snapshots["chains_captured"]:
-        context.log.info(f"Selecting contracts for {symbol}")
+    try:
+        # Process each symbol that has option chain
+        for symbol in option_chain_snapshots["chains_captured"]:
+            context.log.info(f"Selecting contracts for {symbol}")
 
-        # Get latest stock price
-        try:
-            stock_data = stock_reader.get_bars(
-                symbol=symbol,
-                bar_size=config.stock_config.bar_size,
-                start_date=config.get_stock_end_date() - timedelta(days=5),
-                end_date=config.get_stock_end_date(),
-            )
+            # Get latest stock price
+            try:
+                stock_data = stock_reader.get_bars(
+                    symbol=symbol,
+                    bar_size=config.stock_config.bar_size,
+                    start_date=config.get_stock_end_date() - timedelta(days=5),
+                    end_date=config.get_stock_end_date(),
+                )
 
-            if stock_data.empty:
-                context.log.warning(f"No stock data for {symbol}, skipping")
+                if stock_data.empty:
+                    context.log.warning(f"No stock data for {symbol}, skipping")
+                    continue
+
+                latest_price = stock_data.iloc[-1]["close"]
+                context.log.info(f"{symbol} latest price: ${latest_price:.2f}")
+
+            except Exception as e:
+                context.log.error(f"Error getting price for {symbol}: {e}")
                 continue
 
-            latest_price = stock_data.iloc[-1]["close"]
-            context.log.info(f"{symbol} latest price: ${latest_price:.2f}")
+            # Load option chain
+            try:
+                chain = chain_reader.get_chain_for_date(
+                    underlying=symbol,
+                    as_of=config.get_snapshot_date(),
+                    min_dte=config.chain_config.min_dte,
+                    max_dte=config.chain_config.max_dte,
+                )
 
-        except Exception as e:
-            context.log.error(f"Error getting price for {symbol}: {e}")
-            continue
+                if chain.empty:
+                    context.log.warning(f"No option chain for {symbol}, skipping")
+                    continue
 
-        # Load option chain
-        try:
-            chain = chain_reader.get_chain_for_date(
+            except Exception as e:
+                context.log.error(f"Error loading chain for {symbol}: {e}")
+                continue
+
+            # Get available expirations and strikes
+            expirations = chain_reader.get_available_expirations(
                 underlying=symbol,
                 as_of=config.get_snapshot_date(),
                 min_dte=config.chain_config.min_dte,
                 max_dte=config.chain_config.max_dte,
             )
 
-            if chain.empty:
-                context.log.warning(f"No option chain for {symbol}, skipping")
+            if not expirations:
+                context.log.warning(f"No expirations found for {symbol}")
                 continue
 
-        except Exception as e:
-            context.log.error(f"Error loading chain for {symbol}: {e}")
-            continue
+            # Process each expiration
+            for expiry in expirations[:3]:  # Limit to first 3 expirations
+                strikes = chain_reader.get_strikes_for_expiry(
+                    underlying=symbol,
+                    as_of=config.get_snapshot_date(),
+                    expiry=expiry,
+                )
 
-        # Get available expirations and strikes
-        expirations = chain_reader.get_available_expirations(
-            underlying=symbol,
-            as_of=config.get_snapshot_date(),
-            min_dte=config.chain_config.min_dte,
-            max_dte=config.chain_config.max_dte,
+                if not strikes:
+                    continue
+
+                context.log.info(
+                    f"{symbol} {expiry}: {len(strikes)} strikes available"
+                )
+
+                # Apply each enabled strategy
+                strategies_to_run = []
+                if config.enable_closest_match:
+                    strategies_to_run.append("closest_match")
+                if config.enable_calculated_delta:
+                    strategies_to_run.append("black_scholes")
+                # Note: IB greeks requires live connection, skip for now
+                # if config.enable_ib_greeks:
+                #     strategies_to_run.append("ib_greeks")
+
+                for strategy in strategies_to_run:
+                    try:
+                        selected = select_option_contracts(
+                            strikes=strikes,
+                            spot_price=latest_price,
+                            expiry=expiry,
+                            as_of=config.get_snapshot_date(),
+                            config=config.delta_config,
+                            strategy=strategy,
+                        )
+
+                        # Resolve each selected strike to actual IB contract
+                        for contract in selected:
+                            # Create option contract specification
+                            opt_contract = make_option(
+                                symbol=symbol,
+                                lastTradeDateOrContractMonth=expiry.strftime("%Y%m%d"),
+                                strike=contract["strike"],
+                                right=contract["right"],
+                                exchange="SMART",
+                            )
+
+                            # Get contract details from IB Gateway
+                            try:
+                                details_results = details_service.fetch(opt_contract, timeout=10.0)
+
+                                if details_results:
+                                    detail = details_results[0]  # Use first match
+                                    all_selected_contracts.append({
+                                        "underlying": symbol,
+                                        "expiry": expiry,
+                                        "strike": contract["strike"],
+                                        "right": contract["right"],
+                                        "conid": detail.contract.conId,
+                                        "local_symbol": detail.contract.localSymbol,
+                                        "exchange": detail.contract.exchange,
+                                        "trading_class": detail.contract.tradingClass,
+                                        "multiplier": detail.multiplier,
+                                        "strategy": strategy,
+                                        "delta": contract.get("delta"),
+                                        "reason": contract["reason"],
+                                    })
+                                    contracts_resolved += 1
+                                else:
+                                    context.log.warning(
+                                        f"No contract details for {symbol} {expiry} "
+                                        f"{contract['strike']}{contract['right']}"
+                                    )
+                                    contracts_failed += 1
+                            except Exception as e:
+                                context.log.error(
+                                    f"Failed to resolve {symbol} {expiry} "
+                                    f"{contract['strike']}{contract['right']}: {e}"
+                                )
+                                contracts_failed += 1
+
+                        context.log.info(
+                            f"  {strategy}: selected {len(selected)} contracts, "
+                            f"resolved {contracts_resolved}, failed {contracts_failed}"
+                        )
+
+                    except Exception as e:
+                        context.log.error(
+                            f"Error in {strategy} for {symbol} {expiry}: {e}"
+                        )
+
+        if not all_selected_contracts:
+            raise ValueError("No option contracts were selected")
+
+        df = pd.DataFrame(all_selected_contracts)
+
+        context.log.info(
+            f"Selected {len(df)} total option contracts "
+            f"across {df['underlying'].nunique()} symbols "
+            f"(resolved: {contracts_resolved}, failed: {contracts_failed})"
         )
 
-        if not expirations:
-            context.log.warning(f"No expirations found for {symbol}")
-            continue
+        return Output(
+            value=df,
+            metadata={
+                "total_contracts": len(df),
+                "num_symbols": df["underlying"].nunique(),
+                "contracts_resolved": contracts_resolved,
+                "contracts_failed": contracts_failed,
+                "strategies_used": list(df["strategy"].unique()),
+                "contracts_by_strategy": df["strategy"].value_counts().to_dict(),
+                "calls_vs_puts": df["right"].value_counts().to_dict(),
+            },
+        )
 
-        # Process each expiration
-        for expiry in expirations[:3]:  # Limit to first 3 expirations
-            strikes = chain_reader.get_strikes_for_expiry(
-                underlying=symbol,
-                as_of=config.get_snapshot_date(),
-                expiry=expiry,
-            )
-
-            if not strikes:
-                continue
-
-            context.log.info(
-                f"{symbol} {expiry}: {len(strikes)} strikes available"
-            )
-
-            # Apply each enabled strategy
-            strategies_to_run = []
-            if config.enable_closest_match:
-                strategies_to_run.append("closest_match")
-            if config.enable_calculated_delta:
-                strategies_to_run.append("black_scholes")
-            # Note: IB greeks requires live connection, skip for now
-            # if config.enable_ib_greeks:
-            #     strategies_to_run.append("ib_greeks")
-
-            for strategy in strategies_to_run:
-                try:
-                    selected = select_option_contracts(
-                        strikes=strikes,
-                        spot_price=latest_price,
-                        expiry=expiry,
-                        as_of=config.get_snapshot_date(),
-                        config=config.delta_config,
-                        strategy=strategy,
-                    )
-
-                    for contract in selected:
-                        all_selected_contracts.append({
-                            "underlying": symbol,
-                            "expiry": expiry,
-                            "strike": contract["strike"],
-                            "right": contract["right"],
-                            "strategy": strategy,
-                            "delta": contract.get("delta"),
-                            "reason": contract["reason"],
-                        })
-
-                    context.log.info(
-                        f"  {strategy}: selected {len(selected)} contracts"
-                    )
-
-                except Exception as e:
-                    context.log.error(
-                        f"Error in {strategy} for {symbol} {expiry}: {e}"
-                    )
-
-    if not all_selected_contracts:
-        raise ValueError("No option contracts were selected")
-
-    df = pd.DataFrame(all_selected_contracts)
-
-    context.log.info(
-        f"Selected {len(df)} total option contracts "
-        f"across {df['underlying'].nunique()} symbols"
-    )
-
-    return Output(
-        value=df,
-        metadata={
-            "total_contracts": len(df),
-            "num_symbols": df["underlying"].nunique(),
-            "strategies_used": list(df["strategy"].unique()),
-            "contracts_by_strategy": df["strategy"].value_counts().to_dict(),
-            "calls_vs_puts": df["right"].value_counts().to_dict(),
-        },
-    )
+    finally:
+        runtime.stop()
 
 
 # ============================================================================

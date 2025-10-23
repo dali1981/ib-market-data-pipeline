@@ -12,7 +12,7 @@ from dagster_options.assets import (
     ticker_contracts,
     stock_historical_data,
     option_chain_snapshots,
-    selected_option_contracts,
+    select_option_contracts,
     option_historical_data,
 )
 
@@ -58,7 +58,7 @@ select_contracts_job = define_asset_job(
         ticker_contracts,
         stock_historical_data,
         option_chain_snapshots,
-        selected_option_contracts,
+        select_option_contracts,
     ),
 )
 
@@ -95,7 +95,7 @@ defs = Definitions(
         ticker_contracts,
         stock_historical_data,
         option_chain_snapshots,
-        selected_option_contracts,
+        select_option_contracts,
         option_historical_data,
     ],
     jobs=[
