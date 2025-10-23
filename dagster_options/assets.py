@@ -20,7 +20,7 @@ from dlt_ibapi.backfill.resources import (
     snapshot_option_chain,
     backfill_option_bars,
 )
-from dlt_ibapi.backfill.config import OptionBackfillConfig, SelectionMode
+from dlt_ibapi.backfill.config import OptionBackfillConfig, ContractSelectionMode
 
 from dagster_options.config import get_default_config, OptionsPipelineConfig
 from dagster_options.ticker_input import load_tickers
