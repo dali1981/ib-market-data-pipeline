@@ -8,7 +8,7 @@ import pandas as pd
 import dlt
 from dagster import asset, AssetExecutionContext, Output, MetadataValue
 
-from ib_connector import IBRuntime
+from ib_connector import IBRuntime, MatchingSymbolService, ContractDetailsService, make_stock
 from dlt_ibapi.config_loader import get_connection_config
 from dlt_ibapi.resolution.contract_cache import ContractCache
 from dlt_ibapi.resolution.resolver import ContractResolver
@@ -37,22 +37,24 @@ logger = logging.getLogger(__name__)
 @asset(
     name="ticker_contracts",
     group_name="options_pipeline",
-    description="Resolve ticker symbols to IB contracts with caching",
+    description="Resolve ticker symbols to IB contracts (descriptions + details)",
     compute_kind="ib_api",
 )
-def ticker_contracts(context: AssetExecutionContext) -> Output[pd.DataFrame]:
+def ticker_contracts(context: AssetExecutionContext) -> Output[Dict[str, pd.DataFrame]]:
     """
-    Resolve ticker symbols to IB contracts.
+    Resolve ticker symbols to IB contracts using both MatchingSymbol and ContractDetails.
 
     Workflow:
     1. Load ticker list from configured source
-    2. For each ticker, check contract cache
-    3. If not cached, resolve via IB API (match_symbol + contract_details)
-    4. Save to cache automatically
-    5. Return DataFrame of resolved contracts
+    2. For each ticker:
+       a. Call MatchingSymbolService -> get contract descriptions (includes derivatives)
+       b. Call ContractDetailsService -> get full contract details
+    3. Return two separate DataFrames: descriptions and details
 
     Returns:
-        DataFrame with columns: symbol, conid, exchange, currency, sec_type
+        Dict with two DataFrames:
+        - 'descriptions': Contract descriptions (symbol, conid, derivatives_list)
+        - 'details': Full contract details (all contract specifications)
     """
     config = get_default_config()
 
@@ -60,8 +62,7 @@ def ticker_contracts(context: AssetExecutionContext) -> Output[pd.DataFrame]:
     tickers = load_tickers(config.ticker_source)
     context.log.info(f"Loaded {len(tickers)} tickers: {', '.join(tickers)}")
 
-    # Initialize IB runtime and resolver
-    # Load config from: env vars > user config (.dlt-ibapi/ib_gateway.yaml) > package defaults
+    # Initialize IB runtime
     ib_config = get_connection_config()
     context.log.info(
         f"Connecting to IB Gateway at {ib_config.host}:{ib_config.port} "
@@ -75,54 +76,105 @@ def ticker_contracts(context: AssetExecutionContext) -> Output[pd.DataFrame]:
     )
     runtime.start(ready_timeout=ib_config.ready_timeout)
 
-    cache = ContractCache(config.cache_path)
-    resolver = ContractResolver(runtime, cache)
+    # Initialize services
+    matching_service = MatchingSymbolService(runtime)
+    details_service = ContractDetailsService(runtime)
 
-    resolved_contracts = []
+    contract_descriptions = []
+    contract_details = []
 
     try:
         for ticker in tickers:
-            context.log.info(f"Resolving contract for {ticker}")
+            context.log.info(f"Resolving {ticker}")
 
-            # Resolve symbol (checks cache first, then IB API)
-            contract_data = resolver.resolve_symbol(
-                symbol=ticker,
-                exchange=config.stock_config.exchange,
-                currency=config.stock_config.currency,
-                sec_type="STK",
-                use_cache=True,
-                save_to_cache=True,
-            )
+            # Step 1: Get contract descriptions (includes derivatives info)
+            try:
+                desc_results = matching_service.fetch(ticker, timeout=10.0)
 
-            if contract_data:
-                resolved_contracts.append(contract_data)
-                context.log.info(
-                    f"✓ {ticker}: conid={contract_data['conid']}, "
-                    f"exchange={contract_data['exchange']}"
-                )
-            else:
-                context.log.warning(f"✗ Failed to resolve {ticker}")
+                if desc_results:
+                    for desc in desc_results:
+                        contract_descriptions.append({
+                            "symbol": ticker,
+                            "conid": desc.contract.conId,
+                            "sec_type": desc.contract.secType,
+                            "exchange": desc.contract.exchange,
+                            "currency": desc.contract.currency,
+                            "description": desc.contract.description,
+                            "derivatives": ",".join(desc.derivativeSecTypes) if desc.derivativeSecTypes else "",
+                            "has_options": "OPT" in (desc.derivativeSecTypes or []),
+                        })
+
+                    context.log.info(
+                        f"✓ {ticker}: Found {len(desc_results)} matches, "
+                        f"derivatives: {desc_results[0].derivativeSecTypes if desc_results else 'none'}"
+                    )
+                else:
+                    context.log.warning(f"✗ {ticker}: No matching symbols found")
+                    continue
+
+            except Exception as e:
+                context.log.error(f"✗ {ticker}: MatchingSymbol error: {e}")
+                continue
+
+            # Step 2: Get full contract details for the first match
+            if desc_results:
+                try:
+                    # Use the contract from first description
+                    first_desc = desc_results[0]
+                    details_results = details_service.fetch(first_desc.contract, timeout=10.0)
+
+                    if details_results:
+                        for detail in details_results:
+                            contract_details.append({
+                                "symbol": ticker,
+                                "conid": detail.contract.conId,
+                                "local_symbol": detail.contract.localSymbol,
+                                "sec_type": detail.contract.secType,
+                                "exchange": detail.contract.exchange,
+                                "primary_exchange": detail.contract.primaryExchange,
+                                "currency": detail.contract.currency,
+                                "trading_class": detail.contract.tradingClass,
+                                "long_name": detail.longName,
+                                "industry": detail.industry,
+                                "category": detail.category,
+                                "subcategory": detail.subcategory,
+                                "min_tick": detail.minTick,
+                                "price_magnifier": detail.priceMagnifier,
+                                "market_name": detail.marketName,
+                                "valid_exchanges": detail.validExchanges,
+                            })
+
+                        context.log.info(f"✓ {ticker}: Got {len(details_results)} contract details")
+
+                except Exception as e:
+                    context.log.error(f"✗ {ticker}: ContractDetails error: {e}")
 
     finally:
         runtime.stop()
 
-    if not resolved_contracts:
+    if not contract_descriptions:
         raise ValueError("No contracts were successfully resolved")
 
-    # Convert to DataFrame
-    df = pd.DataFrame(resolved_contracts)
+    # Convert to DataFrames
+    descriptions_df = pd.DataFrame(contract_descriptions)
+    details_df = pd.DataFrame(contract_details)
 
     context.log.info(
-        f"Resolved {len(df)} contracts out of {len(tickers)} tickers"
+        f"Resolved {len(descriptions_df)} descriptions and {len(details_df)} details "
+        f"for {len(tickers)} tickers"
     )
 
     return Output(
-        value=df,
+        value={
+            "descriptions": descriptions_df,
+            "details": details_df,
+        },
         metadata={
             "num_tickers": len(tickers),
-            "num_resolved": len(df),
-            "success_rate": f"{len(df) / len(tickers) * 100:.1f}%",
-            "symbols": MetadataValue.md("\n".join([f"- {row['symbol']}" for _, row in df.iterrows()])),
+            "num_descriptions": len(descriptions_df),
+            "num_details": len(details_df),
+            "success_rate": f"{len(descriptions_df) / len(tickers) * 100:.1f}%",
+            "tickers_with_options": int(descriptions_df["has_options"].sum()) if len(descriptions_df) > 0 else 0,
         },
     )
 
@@ -140,7 +192,7 @@ def ticker_contracts(context: AssetExecutionContext) -> Output[pd.DataFrame]:
 )
 def stock_historical_data(
     context: AssetExecutionContext,
-    ticker_contracts: pd.DataFrame,
+    ticker_contracts: Dict[str, pd.DataFrame],
 ) -> Output[Dict[str, Any]]:
     """
     Fetch historical stock data using DLT with gap detection.
@@ -156,8 +208,11 @@ def stock_historical_data(
     """
     config = get_default_config()
 
+    # Extract descriptions DataFrame
+    descriptions_df = ticker_contracts["descriptions"]
+
     context.log.info(
-        f"Fetching stock data for {len(ticker_contracts)} symbols "
+        f"Fetching stock data for {len(descriptions_df)} symbols "
         f"({config.stock_config.lookback_days} days lookback)"
     )
 
@@ -171,7 +226,7 @@ def stock_historical_data(
     total_records = 0
     symbols_processed = []
 
-    for _, contract in ticker_contracts.iterrows():
+    for _, contract in descriptions_df.iterrows():
         symbol = contract["symbol"]
 
         context.log.info(f"Processing {symbol}")
@@ -230,7 +285,7 @@ def stock_historical_data(
 )
 def option_chain_snapshots(
     context: AssetExecutionContext,
-    ticker_contracts: pd.DataFrame,
+    ticker_contracts: Dict[str, pd.DataFrame],
 ) -> Output[Dict[str, Any]]:
     """
     Capture option chain snapshots for each ticker.
@@ -248,8 +303,13 @@ def option_chain_snapshots(
     config = get_default_config()
     snapshot_date = config.get_snapshot_date()
 
+    # Extract descriptions DataFrame (only process tickers with options)
+    descriptions_df = ticker_contracts["descriptions"]
+    tickers_with_options = descriptions_df[descriptions_df["has_options"] == True]
+
     context.log.info(
-        f"Capturing option chains for {len(ticker_contracts)} symbols "
+        f"Capturing option chains for {len(tickers_with_options)} symbols with options "
+        f"(out of {len(descriptions_df)} total symbols)"
         f"(snapshot_date={snapshot_date}, DTE={config.chain_config.min_dte}-{config.chain_config.max_dte})"
     )
 
@@ -262,7 +322,7 @@ def option_chain_snapshots(
 
     chains_captured = []
 
-    for _, contract in ticker_contracts.iterrows():
+    for _, contract in tickers_with_options.iterrows():
         symbol = contract["symbol"]
 
         context.log.info(f"Fetching option chain for {symbol}")
