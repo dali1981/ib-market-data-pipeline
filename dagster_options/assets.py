@@ -9,6 +9,7 @@ import dlt
 from dagster import asset, AssetExecutionContext, Output, MetadataValue
 
 from ib_connector import IBRuntime, MatchingSymbolService, ContractDetailsService, make_stock
+from dlt_ibapi.config import IBConnectionConfig
 from dlt_ibapi.config_loader import get_connection_config
 from dlt_ibapi.resolution.contract_cache import ContractCache
 from dlt_ibapi.resolution.resolver import ContractResolver
@@ -62,17 +63,18 @@ def ticker_contracts(context: AssetExecutionContext) -> Output[Dict[str, pd.Data
     tickers = load_tickers(config.ticker_source)
     context.log.info(f"Loaded {len(tickers)} tickers: {', '.join(tickers)}")
 
-    # Initialize IB runtime
+    # Initialize IB runtime with unique client_id for this asset
     ib_config = get_connection_config()
+    client_id = ib_config.client_id  # Use client_id 1 for ticker_contracts
     context.log.info(
         f"Connecting to IB Gateway at {ib_config.host}:{ib_config.port} "
-        f"(client_id={ib_config.client_id})"
+        f"(client_id={client_id})"
     )
 
     runtime = IBRuntime(
         host=ib_config.host,
         port=ib_config.port,
-        client_id=ib_config.client_id,
+        client_id=client_id,
     )
     runtime.start(ready_timeout=ib_config.ready_timeout)
 
@@ -230,17 +232,27 @@ def stock_historical_data(
     total_records = 0
     symbols_processed = []
 
+    # Use client_id 2 for stock data (different from ticker_contracts which uses 1)
+    ib_config = get_connection_config()
+    stock_ib_config = IBConnectionConfig(
+        host=ib_config.host,
+        port=ib_config.port,
+        client_id=ib_config.client_id + 1,  # client_id 2
+        ready_timeout=ib_config.ready_timeout,
+    )
+
     for _, contract in descriptions_df.iterrows():
         symbol = contract["symbol"]
 
         context.log.info(f"Processing {symbol}")
 
-        # Create DLT resource for this symbol
+        # Create DLT resource for this symbol with custom client_id
         resource = backfill_equity_bars(
             symbol=symbol,
             database_path=config.database_path,
             dataset_name=config.stock_dataset,
             cache_path=config.cache_path,
+            connection_config=stock_ib_config,
             start_date=config.get_stock_start_date(),
             end_date=config.get_stock_end_date(),
             bar_size=config.stock_config.bar_size,
@@ -307,6 +319,15 @@ def option_chain_snapshots(
         f"(snapshot_date={snapshot_date}, DTE={config.chain_config.min_dte}-{config.chain_config.max_dte})"
     )
 
+    # Use client_id 3 for option chain snapshots (different from ticker_contracts=1, stock_historical_data=2)
+    ib_config = get_connection_config()
+    chain_ib_config = IBConnectionConfig(
+        host=ib_config.host,
+        port=ib_config.port,
+        client_id=ib_config.client_id + 2,  # client_id 3
+        ready_timeout=ib_config.ready_timeout,
+    )
+
     # Create DLT pipeline
     pipeline = dlt.pipeline(
         pipeline_name="option_chain_snapshots",
@@ -326,6 +347,7 @@ def option_chain_snapshots(
             underlying=symbol,
             snapshot_date=snapshot_date,
             cache_path=config.cache_path,
+            connection_config=chain_ib_config,
             min_dte=config.chain_config.min_dte,
             max_dte=config.chain_config.max_dte,
         )
