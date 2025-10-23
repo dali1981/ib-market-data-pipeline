@@ -93,20 +93,24 @@ def ticker_contracts(context: AssetExecutionContext) -> Output[Dict[str, pd.Data
 
                 if desc_results:
                     for desc in desc_results:
+                        # desc is a dict with keys: 'contract' and 'derivativeSecTypes'
+                        contract = desc["contract"]
+                        derivatives = desc.get("derivativeSecTypes", [])
+
                         contract_descriptions.append({
                             "symbol": ticker,
-                            "conid": desc.contract.conId,
-                            "sec_type": desc.contract.secType,
-                            "exchange": desc.contract.exchange,
-                            "currency": desc.contract.currency,
-                            "description": desc.contract.description,
-                            "derivatives": ",".join(desc.derivativeSecTypes) if desc.derivativeSecTypes else "",
-                            "has_options": "OPT" in (desc.derivativeSecTypes or []),
+                            "conid": contract.conId,
+                            "sec_type": contract.secType,
+                            "exchange": contract.exchange,
+                            "currency": contract.currency,
+                            "description": contract.description,
+                            "derivatives": ",".join(derivatives) if derivatives else "",
+                            "has_options": "OPT" in (derivatives or []),
                         })
 
                     context.log.info(
                         f"✓ {ticker}: Found {len(desc_results)} matches, "
-                        f"derivatives: {desc_results[0].derivativeSecTypes if desc_results else 'none'}"
+                        f"derivatives: {desc_results[0].get('derivativeSecTypes', [])})"
                     )
                 else:
                     context.log.warning(f"✗ {ticker}: No matching symbols found")
@@ -119,9 +123,9 @@ def ticker_contracts(context: AssetExecutionContext) -> Output[Dict[str, pd.Data
             # Step 2: Get full contract details for the first match
             if desc_results:
                 try:
-                    # Use the contract from first description
-                    first_desc = desc_results[0]
-                    details_results = details_service.fetch(first_desc.contract, timeout=10.0)
+                    # Use the contract from first description (dict with 'contract' key)
+                    first_contract = desc_results[0]["contract"]
+                    details_results = details_service.fetch(first_contract, timeout=10.0)
 
                     if details_results:
                         for detail in details_results:
