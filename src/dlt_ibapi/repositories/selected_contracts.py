@@ -57,7 +57,7 @@ class SelectedContractsReader(ParquetReaderBase):
             SELECT *
             FROM {table_name}
             {where_sql}
-            ORDER BY underlying, expiry, strike, right
+            ORDER BY underlying, expiry, strike, "right"
         """
 
         return self._query_with_duckdb(query, params)
@@ -98,7 +98,7 @@ class SelectedContractsReader(ParquetReaderBase):
             SELECT *
             FROM {table_name}
             WHERE {where_sql}
-            ORDER BY expiry, strike, right
+            ORDER BY expiry, strike, "right"
         """
 
         return self._query_with_duckdb(query, params)
@@ -133,7 +133,7 @@ class SelectedContractsReader(ParquetReaderBase):
             SELECT *
             FROM {table_name}
             WHERE {where_sql}
-            ORDER BY underlying, expiry, strike, right
+            ORDER BY underlying, expiry, strike, "right"
         """
 
         return self._query_with_duckdb(query, params)
@@ -176,7 +176,7 @@ class SelectedContractsReader(ParquetReaderBase):
             SELECT *
             FROM {table_name}
             WHERE {where_sql}
-            ORDER BY strike, right, strategy
+            ORDER BY strike, "right", strategy
         """
 
         return self._query_with_duckdb(query, params)
