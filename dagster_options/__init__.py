@@ -15,7 +15,7 @@ from dagster_options.assets import (
     ticker_contracts,
     stock_historical_data,
     option_chain_snapshots,
-    selected_option_contracts,
+    select_option_contracts,
     option_historical_data,
 )
 from dagster_options.definitions import defs
@@ -24,7 +24,7 @@ __all__ = [
     "ticker_contracts",
     "stock_historical_data",
     "option_chain_snapshots",
-    "selected_option_contracts",
+    "select_option_contracts",
     "option_historical_data",
     "defs",
 ]
