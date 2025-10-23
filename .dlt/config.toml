@@ -14,9 +14,8 @@ bucket_url = "data"
 # Partitioning by table_name, date, and symbol for efficient queries
 layout = "{table_name}/date={date}/symbol={symbol}"
 
-[destination.filesystem.credentials]
-# No credentials needed for local filesystem
-# For cloud storage (S3/GCS/Azure), add credentials here
+# No credentials section needed for local filesystem
+# For cloud storage (S3/GCS/Azure), add credentials to .dlt/secrets.toml
 
 [normalize]
 # DLT normalization settings

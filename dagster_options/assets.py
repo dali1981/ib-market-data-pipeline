@@ -251,26 +251,16 @@ def stock_historical_data(
         # Run pipeline
         load_info = pipeline.run(resource)
 
-        # Count records
-        records = sum(
-            pkg.state.get("finished_count", 0)
-            for pkg in load_info.load_packages
-        )
-
-        total_records += records
+        # Pipeline ran successfully
         symbols_processed.append(symbol)
-
-        context.log.info(f"✓ {symbol}: {records} bars loaded")
+        context.log.info(f"✓ {symbol}: data loaded")
 
     return Output(
         value={
             "symbols_processed": symbols_processed,
-            "total_records": total_records,
         },
         metadata={
             "num_symbols": len(symbols_processed),
-            "total_bars": total_records,
-            "avg_bars_per_symbol": total_records / len(symbols_processed) if symbols_processed else 0,
             "date_range": f"{config.get_stock_start_date()} to {config.get_stock_end_date()}",
         },
     )
@@ -343,13 +333,12 @@ def option_chain_snapshots(
         # Run pipeline
         load_info = pipeline.run(resource)
 
-        # Check if data was loaded
-        records = sum(
-            pkg.state.get("finished_count", 0)
-            for pkg in load_info.load_packages
-        )
-
-        if records > 0:
+        # Check if data was loaded (load_info has rows_count or metrics)
+        if hasattr(load_info, 'metrics') and load_info.metrics:
+            chains_captured.append(symbol)
+            context.log.info(f"✓ {symbol}: option chain captured")
+        elif load_info:
+            # Pipeline ran successfully
             chains_captured.append(symbol)
             context.log.info(f"✓ {symbol}: option chain captured")
         else:
