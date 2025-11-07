@@ -1542,6 +1542,37 @@ def test_backfill_equity_with_mock():
     assert result.success
 ```
 
+## Project Structure
+
+```
+src/dlt_ibapi/
+├── cli/                        # CLI business logic (NEW v0.2.0)
+│   ├── __init__.py            # Public API
+│   ├── models.py              # Pydantic models (params + results)
+│   ├── backfill.py            # Backfill business logic
+│   ├── snapshot.py            # Snapshot business logic
+│   └── stats.py               # Stats business logic
+├── utils/                      # Utilities (NEW v0.2.0)
+│   ├── __init__.py
+│   └── logging.py             # Structured logging
+├── backfill/                   # Backfill infrastructure
+│   ├── resources.py           # DLT resources with gap detection
+│   ├── gap_detection.py       # Gap calculation logic
+│   ├── contract_selection.py  # Option contract selection
+│   └── market_calendar.py     # Business day calculations
+├── repositories/               # Read API (Parquet queries)
+│   ├── base.py                # Base reader classes
+│   ├── parquet_reader.py      # ParquetReaderBase
+│   ├── equity_bars.py         # EquityBarsReader
+│   ├── option_bars.py         # OptionBarsReader
+│   └── option_chain.py        # OptionChainSnapshotReader
+├── sources.py                  # Basic DLT resources
+├── transformers.py             # Data normalization
+├── config.py                   # Pydantic config models
+├── config_loader.py            # Config hierarchy loader
+└── cli.py                      # CLI commands (presentation)
+```
+
 ## Examples
 
 See the `examples/` directory for complete usage examples:
