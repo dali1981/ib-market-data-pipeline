@@ -410,91 +410,143 @@ def backfill_options(
     dataset: str = typer.Option("options", "--dataset", help="Dataset name"),
     database: Optional[str] = typer.Option(None, "--database", "--db", help="[Deprecated] Use --pipeline-name instead"),
     config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
+    # New options
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose (DEBUG) logging"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress INFO logs"),
+    log_file: Optional[Path] = typer.Option(None, "--log-file", help="Write logs to file with rotation"),
+    json_logs: bool = typer.Option(False, "--json-logs", help="Output structured JSON logs"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without doing it"),
 ):
     """
     Backfill option bars with gap detection.
 
     Example:
         dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
-        dlt-ibapi backfill-options AAPL 150.0 --pipeline-name my_options
+        dlt-ibapi backfill-options AAPL 150.0 --pipeline-name my_options --verbose
+        dlt-ibapi backfill-options AAPL 150.0 --dry-run
     """
-    from .backfill import backfill_option_bars, OptionBackfillConfig, ContractSelectionMode
+    from .utils.logging import setup_logging
+    from .cli import BackfillOptionsParams, execute_backfill_options
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
-    console.print(f"\n[bold cyan]Backfilling option bars for {symbol}[/bold cyan]\n")
-
-    # Parse dates
-    start_date = datetime.strptime(start, "%Y-%m-%d").date() if start else date.today() - timedelta(days=30)
-    end_date = datetime.strptime(end, "%Y-%m-%d").date() if end else date.today()
-
-    # Parse selection mode
-    mode_map = {
-        "atm": ContractSelectionMode.K_AROUND_ATM,
-        "moneyness": ContractSelectionMode.MONEYNESS,
-        "delta": ContractSelectionMode.DELTA,
-        "all": ContractSelectionMode.ALL,
-    }
+    # Setup logging
+    setup_logging(
+        level="INFO",
+        log_file=log_file,
+        verbose=verbose,
+        quiet=quiet or dry_run,
+        json_logs=json_logs,
+    )
 
     # Handle legacy --database argument
     if database:
         console.print("[yellow]Warning: --database is deprecated. Use --pipeline-name instead.[/yellow]")
         pipeline_name = database.replace(".duckdb", "")
 
-    if mode not in mode_map:
-        console.print(f"[red]✗[/red] Invalid mode: {mode}. Choose from: atm, moneyness, delta, all")
+    # Parse dates
+    start_date = datetime.strptime(start, "%Y-%m-%d").date() if start else date.today() - timedelta(days=30)
+    end_date = datetime.strptime(end, "%Y-%m-%d").date() if end else date.today()
+
+    # Validate selection mode
+    valid_modes = ["atm", "moneyness", "delta", "all"]
+    if mode not in valid_modes:
+        console.print(f"[red]✗ Invalid mode: {mode}. Choose from: {', '.join(valid_modes)}[/red]")
         raise typer.Exit(1)
 
-    console.print(f"Symbol:        {symbol} @ ${spot_price}")
-    console.print(f"Date range:    {start_date} to {end_date}")
-    console.print(f"Bar size:      {bar_size}")
-    console.print(f"Selection:     {mode}")
-    console.print(f"DTE range:     {min_dte} to {max_dte}")
-    console.print(f"Pipeline:      {pipeline_name}")
-    console.print(f"Dataset:       {dataset}\n")
+    # Display plan
+    console.print(f"\n[bold cyan]{'DRY RUN: ' if dry_run else ''}Backfilling option bars for {symbol}[/bold cyan]\n")
+
+    table = Table(show_header=False, box=None)
+    table.add_column("Key", style="cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Underlying", f"{symbol} @ ${spot_price}")
+    table.add_row("Date Range", f"{start_date} to {end_date}")
+    table.add_row("Bar Size", bar_size)
+    table.add_row("Selection Mode", mode)
+    table.add_row("K Strikes", str(k_strikes) if mode == "atm" else "N/A")
+    table.add_row("DTE Range", f"{min_dte} to {max_dte}")
+    table.add_row("Pipeline", pipeline_name)
+    table.add_row("Dataset", dataset)
+    console.print(table)
+    console.print()
+
+    # Dry run mode
+    if dry_run:
+        console.print("[yellow]DRY RUN MODE - No data will be fetched[/yellow]")
+        console.print(f"[yellow]Would backfill {symbol} options from {start_date} to {end_date}[/yellow]")
+        console.print("[yellow]Remove --dry-run to actually execute[/yellow]")
+        return
+
+    # Confirmation for large operations
+    days = (end_date - start_date).days + 1
+    if days > 90:
+        console.print(f"[yellow]Large backfill: {days} days[/yellow]")
+        if not typer.confirm("Continue?"):
+            console.print("[yellow]Cancelled[/yellow]")
+            return
 
     try:
-        # Get connection config
-        conn_config = get_connection_config(config_file)
-
-        # Create backfill config
-        config = OptionBackfillConfig(
+        # Create params
+        params = BackfillOptionsParams(
+            underlying=symbol,
+            spot_price=spot_price,
             start_date=start_date,
             end_date=end_date,
             bar_size=bar_size,
-            selection_mode=mode_map[mode],
+            selection_mode=mode,
             k_strikes=k_strikes,
             min_dte=min_dte,
             max_dte=max_dte,
-        )
-
-        # Create pipeline with filesystem destination (Parquet)
-        pipeline = dlt.pipeline(
             pipeline_name=pipeline_name,
-            destination=dlt.destinations.filesystem(bucket_url="data"),
             dataset_name=dataset,
+            database_path=Path("data"),
         )
 
-        # Run backfill
-        with console.status("[bold green]Running backfill..."):
-            data = backfill_option_bars(
-                underlying=symbol,
-                spot_price=spot_price,
-                database_path="data",  # Point to Parquet directory
-                dataset_name=dataset,
-                connection_config=conn_config,
-                backfill_config=config,
-            )
+        # Get connection config
+        conn_config = get_connection_config(config_file)
 
-            info = pipeline.run(data, write_disposition="append", loader_file_format="parquet")
+        # Execute with progress bar
+        console.print("[cyan]Starting backfill...[/cyan]\n")
 
-        if info.has_failed_jobs:
-            console.print("[red]✗[/red] Backfill failed!")
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[cyan]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Backfilling options...", total=None)
+            result = execute_backfill_options(params, connection_config=conn_config)
+
+        # Display results
+        console.print()
+        if result.success:
+            console.print(f"[green]✓ Backfill completed successfully![/green]")
+            console.print(f"[cyan]Contracts processed:[/cyan] {result.contracts_processed}")
+            console.print(f"[cyan]Total bars:[/cyan] {result.total_bars}")
+            console.print(f"[cyan]Data saved to:[/cyan] {result.output_path}")
+            console.print(f"[cyan]Duration:[/cyan] {result.duration_seconds:.1f}s")
+
+            if result.warnings:
+                console.print(f"\n[yellow]Warnings:[/yellow]")
+                for warning in result.warnings:
+                    console.print(f"  [yellow]⚠[/yellow] {warning}")
+        else:
+            console.print(f"[red]✗ Backfill failed: {result.error}[/red]")
+            if result.warnings:
+                for warning in result.warnings:
+                    console.print(f"  [yellow]⚠[/yellow] {warning}")
             raise typer.Exit(1)
 
-        console.print("[green]✓[/green] Backfill completed successfully!")
-        console.print(f"[cyan]Data saved to:[/cyan] ./data/{dataset}/")
-
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Backfill interrupted by user[/yellow]")
+        raise typer.Exit(130)
     except Exception as e:
         console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        if verbose:
+            import traceback
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
         raise typer.Exit(1)
 
 
@@ -512,89 +564,154 @@ def backfill_equity(
     dataset: str = typer.Option("stocks", "--dataset", help="Dataset name"),
     database: Optional[str] = typer.Option(None, "--database", "--db", help="[Deprecated] Use --pipeline-name instead"),
     config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
+    # New options
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose (DEBUG) logging"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress INFO logs"),
+    log_file: Optional[Path] = typer.Option(None, "--log-file", help="Write logs to file with rotation"),
+    json_logs: bool = typer.Option(False, "--json-logs", help="Output structured JSON logs"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without doing it"),
 ):
     """
     Backfill equity bars with gap detection.
 
     Example:
         dlt-ibapi backfill-equity AAPL MSFT GOOGL --bar-size "1 day"
-        dlt-ibapi backfill-equity AAPL --pipeline-name my_stocks
+        dlt-ibapi backfill-equity AAPL --pipeline-name my_stocks --verbose
+        dlt-ibapi backfill-equity AAPL MSFT --dry-run
     """
-    from .backfill import equity_bars_backfill_source
+    from .utils.logging import setup_logging
+    from .cli import BackfillEquityParams, execute_backfill_equity
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
+
+    # Setup logging
+    setup_logging(
+        level="INFO",
+        log_file=log_file,
+        verbose=verbose,
+        quiet=quiet or dry_run,  # Suppress logs in dry-run
+        json_logs=json_logs,
+    )
 
     # Handle legacy --database argument
     if database:
         console.print("[yellow]Warning: --database is deprecated. Use --pipeline-name instead.[/yellow]")
         pipeline_name = database.replace(".duckdb", "")
 
-    console.print(f"\n[bold cyan]Backfilling equity bars for {len(symbols)} symbols[/bold cyan]\n")
-
     # Parse dates
     start_date = datetime.strptime(start, "%Y-%m-%d").date() if start else date.today() - timedelta(days=30)
     end_date = datetime.strptime(end, "%Y-%m-%d").date() if end else date.today()
 
-    console.print(f"Symbols:       {', '.join(symbols)}")
-    console.print(f"Date range:    {start_date} to {end_date}")
-    console.print(f"Bar size:      {bar_size}")
-    console.print(f"Pipeline:      {pipeline_name}")
-    console.print(f"Dataset:       {dataset}\n")
+    # Display plan
+    console.print(f"\n[bold cyan]{'DRY RUN: ' if dry_run else ''}Backfilling equity bars for {len(symbols)} symbols[/bold cyan]\n")
+
+    table = Table(show_header=False, box=None)
+    table.add_column("Key", style="cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Symbols", ", ".join(symbols))
+    table.add_row("Date Range", f"{start_date} to {end_date}")
+    table.add_row("Bar Size", bar_size)
+    table.add_row("Pipeline", pipeline_name)
+    table.add_row("Dataset", dataset)
+    table.add_row("Days", str((end_date - start_date).days + 1))
+    console.print(table)
+    console.print()
+
+    # Dry run mode
+    if dry_run:
+        console.print("[yellow]DRY RUN MODE - No data will be fetched[/yellow]")
+        console.print(f"[yellow]Would backfill {len(symbols)} symbols from {start_date} to {end_date}[/yellow]")
+        console.print("[yellow]Remove --dry-run to actually execute[/yellow]")
+        return
+
+    # Confirmation for large operations
+    days = (end_date - start_date).days + 1
+    if len(symbols) > 10 or days > 90:
+        console.print(f"[yellow]Large backfill: {len(symbols)} symbols, {days} days[/yellow]")
+        if not typer.confirm("Continue?"):
+            console.print("[yellow]Cancelled[/yellow]")
+            return
 
     try:
+        # Create params
+        params = BackfillEquityParams(
+            symbols=symbols,
+            start_date=start_date,
+            end_date=end_date,
+            bar_size=bar_size,
+            pipeline_name=pipeline_name,
+            dataset_name=dataset,
+            database_path=Path("data"),
+        )
+
         # Get connection config
         conn_config = get_connection_config(config_file)
 
-        # Create pipeline with filesystem destination (Parquet)
-        pipeline = dlt.pipeline(
-            pipeline_name=pipeline_name,
-            destination=dlt.destinations.filesystem(bucket_url="data"),
-            dataset_name=dataset,
-        )
+        # Execute with progress bar
+        console.print("[cyan]Starting backfill...[/cyan]\n")
 
-        # Run backfill
-        with console.status("[bold green]Running backfill..."):
-            data = equity_bars_backfill_source(
-                symbols=symbols,
-                database_path="data",  # Point to Parquet directory
-                dataset_name=dataset,
-                connection_config=conn_config,
-                start_date=start_date,
-                end_date=end_date,
-                bar_size=bar_size,
-            )
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[cyan]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Backfilling...", total=len(symbols))
+            result = execute_backfill_equity(params, connection_config=conn_config)
+            progress.update(task, completed=len(symbols))
 
-            info = pipeline.run(data, write_disposition="append", loader_file_format="parquet")
+        # Display results
+        console.print()
+        if result.success:
+            console.print(f"[green]✓ Backfill completed successfully![/green]")
+            console.print(f"[cyan]Symbols processed:[/cyan] {len(result.symbols_processed)}/{len(symbols)}")
+            console.print(f"[cyan]Data saved to:[/cyan] {result.output_path}")
+            console.print(f"[cyan]Duration:[/cyan] {result.duration_seconds:.1f}s")
 
-        if info.has_failed_jobs:
-            console.print("[red]✗[/red] Backfill failed!")
+            if result.warnings:
+                console.print(f"\n[yellow]Warnings:[/yellow]")
+                for warning in result.warnings:
+                    console.print(f"  [yellow]⚠[/yellow] {warning}")
+
+            # Display summary
+            from .repositories import EquityBarsReader
+            reader = EquityBarsReader(str(params.database_path), dataset)
+            summary = reader.get_symbols_summary(bar_size=bar_size)
+
+            if not summary.empty:
+                console.print()
+                table = Table(title="Backfill Summary")
+                table.add_column("Symbol", style="cyan")
+                table.add_column("Bar Count", justify="right")
+                table.add_column("First Bar", style="dim")
+                table.add_column("Last Bar", style="dim")
+
+                for _, row in summary.iterrows():
+                    if row['symbol'] in result.symbols_processed:
+                        table.add_row(
+                            row['symbol'],
+                            str(int(row['bar_count'])),
+                            str(row['first_bar'].date()),
+                            str(row['last_bar'].date())
+                        )
+
+                console.print(table)
+        else:
+            console.print(f"[red]✗ Backfill failed: {result.error}[/red]")
+            if result.warnings:
+                for warning in result.warnings:
+                    console.print(f"  [yellow]⚠[/yellow] {warning}")
             raise typer.Exit(1)
 
-        console.print("[green]✓[/green] Backfill completed successfully!")
-        console.print(f"[cyan]Data saved to:[/cyan] ./data/{dataset}/")
-
-        # Display summary
-        from .repositories import EquityBarsReader
-        reader = EquityBarsReader("data", dataset)
-        summary = reader.get_symbols_summary(bar_size=bar_size)
-
-        if not summary.empty:
-            table = Table(title="Backfill Summary")
-            table.add_column("Symbol", style="cyan")
-            table.add_column("Bar Count", justify="right")
-            table.add_column("First Bar", style="dim")
-            table.add_column("Last Bar", style="dim")
-
-            for _, row in summary.iterrows():
-                table.add_row(
-                    row['symbol'],
-                    str(int(row['bar_count'])),
-                    str(row['first_bar'].date()),
-                    str(row['last_bar'].date())
-                )
-
-            console.print(table)
-
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Backfill interrupted by user[/yellow]")
+        raise typer.Exit(130)
     except Exception as e:
         console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        if verbose:
+            import traceback
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
         raise typer.Exit(1)
 
 
