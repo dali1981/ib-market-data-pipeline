@@ -406,22 +406,42 @@ print(contracts[['expiry', 'strike', 'right', 'bar_count']])
 
 ### CLI Commands
 
+The CLI has been refactored with enhanced features for production use:
+
+**New Features** (v0.2.0+):
+- **Progress bars** - Visual feedback for long operations
+- **Logging options** - `--verbose`, `--quiet`, `--log-file`, `--json-logs`
+- **Dry-run mode** - `--dry-run` to preview without executing
+- **Confirmation prompts** - Prevents accidental large operations
+- **Structured errors** - Better error messages with optional tracebacks
+
 ```bash
-# Equity backfill
+# Equity backfill (with new options)
 dlt-ibapi backfill-equity AAPL MSFT GOOGL --bar-size "1 day"
+dlt-ibapi backfill-equity AAPL --verbose --log-file backfill.log
+dlt-ibapi backfill-equity AAPL MSFT --dry-run  # Preview without executing
 
 # Option snapshot
 dlt-ibapi snapshot AAPL --min-dte 7 --max-dte 60
+dlt-ibapi snapshot AAPL --verbose  # DEBUG logging
 
 # Option backfill
 dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
+dlt-ibapi backfill-options AAPL 150.0 --dry-run  # Preview
 
 # List snapshots
 dlt-ibapi list-snapshots AAPL
 
 # Database statistics
-dlt-ibapi stats ib_options.duckdb --dataset options
+dlt-ibapi stats ./data --dataset stocks
 ```
+
+**Common Options** (available on most commands):
+- `--verbose, -v` - Enable DEBUG logging
+- `--quiet, -q` - Suppress INFO logs (show warnings/errors only)
+- `--log-file FILE` - Write logs to file with rotation
+- `--json-logs` - Output structured JSON logs
+- `--dry-run` - Show what would be done without executing (backfill commands)
 
 ### Documentation
 
@@ -1317,11 +1337,53 @@ The `dlt-ibapi` command-line interface provides utilities for configuration, tes
 ### Available Commands
 
 ```bash
+# Configuration
 dlt-ibapi init              # Initialize config file
 dlt-ibapi show-config       # Display current configuration
 dlt-ibapi test-connection   # Test IB Gateway/TWS connection
-dlt-ibapi fetch             # Fetch data manually
+
+# Data Operations
+dlt-ibapi backfill-equity   # Backfill equity bars with gap detection
+dlt-ibapi backfill-options  # Backfill option bars with gap detection
+dlt-ibapi snapshot          # Capture option chain snapshot
+dlt-ibapi list-snapshots    # List available snapshots
+
+# Utilities
+dlt-ibapi stats             # Database/Parquet statistics
+dlt-ibapi fetch             # Manual data fetching
 dlt-ibapi version           # Show version
+```
+
+### Enhanced CLI Features (v0.2.0+)
+
+All major commands now support:
+
+**Logging Options**:
+```bash
+--verbose, -v          # Enable DEBUG logging
+--quiet, -q            # Suppress INFO logs
+--log-file FILE        # Write logs to file with rotation
+--json-logs            # Output structured JSON logs
+```
+
+**Operational Safety**:
+```bash
+--dry-run              # Preview without executing (backfill commands)
+```
+
+**Example**:
+```bash
+# Verbose logging with file output
+dlt-ibapi backfill-equity AAPL --verbose --log-file backfill.log
+
+# Quiet mode (warnings/errors only)
+dlt-ibapi backfill-equity AAPL MSFT GOOGL --quiet
+
+# Preview what would happen
+dlt-ibapi backfill-equity AAPL MSFT --dry-run
+
+# JSON structured logs
+dlt-ibapi backfill-options AAPL 150.0 --json-logs
 ```
 
 ### Command Details
@@ -1420,11 +1482,64 @@ uv sync --dev
 # Run tests
 uv run pytest
 
+# Run specific test file
+uv run pytest tests/unit/test_gap_detection.py
+
+# Run with coverage
+uv run pytest --cov=src/dlt_ibapi --cov-report=html
+
 # Format code
 uv run ruff format .
 
 # Lint
 uv run ruff check .
+
+# Auto-fix linting issues
+uv run ruff check --fix .
+```
+
+### CLI Development
+
+The CLI uses a modular architecture for maintainability and testability:
+
+**Business Logic** (testable without CLI framework):
+```python
+from dlt_ibapi.cli import BackfillEquityParams, execute_backfill_equity
+
+params = BackfillEquityParams(
+    symbols=["AAPL"],
+    start_date=date(2025, 1, 1),
+    end_date=date(2025, 1, 31),
+    bar_size="1 day",
+    pipeline_name="test",
+)
+
+result = execute_backfill_equity(params)
+assert result.success
+```
+
+**Testing Pattern**:
+```python
+def test_backfill_equity_validation():
+    """Test Pydantic catches invalid params."""
+    with pytest.raises(ValueError):
+        BackfillEquityParams(
+            symbols=["AAPL"],
+            start_date=date(2025, 1, 31),
+            end_date=date(2025, 1, 1),  # Invalid: before start
+            bar_size="1 day",
+            pipeline_name="test",
+        )
+
+def test_backfill_equity_with_mock():
+    """Test business logic with mocked dependencies."""
+    params = BackfillEquityParams(...)
+    mock_pipeline = Mock()
+    result = execute_backfill_equity(
+        params,
+        pipeline_factory=lambda _: mock_pipeline
+    )
+    assert result.success
 ```
 
 ## Examples
