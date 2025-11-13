@@ -2,7 +2,7 @@
 name = "dlt-ibapi"
 version = "0.1.0"
 description = "DLT connector for Interactive Brokers - ingest market data via IB Gateway/TWS into data pipelines"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "dlt[filesystem,parquet,duckdb]>=0.4.0", # Added filesystem and parquet extras
     "ib-connector>=0.1.0",
@@ -50,4 +50,4 @@ packages = ["src/dlt_ibapi"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"

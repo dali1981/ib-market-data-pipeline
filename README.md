@@ -506,7 +506,13 @@ IB API → DLT Ingestion (dlt-ibapi) → Raw Parquet
 
 ## Backtesting
 
-`dlt-ibapi` includes a production-ready **options backtesting framework** for earnings calendar spread strategies.
+> **⚠️ CRITICAL WARNING**: The backtest is currently **NON-FUNCTIONAL** due to IB API limitations. The IB API does not provide historical option chain snapshots (see [IB API limitations](https://interactivebrokers.github.io/tws-api/historical_limitations.html)). The current implementation will return 0 trades until properly reimplemented. See [`docs/BACKTEST_QUICKSTART.md`](docs/BACKTEST_QUICKSTART.md) for details on:
+> - What data IS and IS NOT available from IB API
+> - How to use the validation system to check data availability
+> - Required approach using deterministic option selection + pre-collected option bars
+> - Data collection workflow for future backtesting
+
+`dlt-ibapi` includes a **options backtesting framework** for earnings calendar spread strategies (currently under repair - see warning above).
 
 ### Features
 
