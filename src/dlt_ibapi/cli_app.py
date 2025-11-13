@@ -930,6 +930,21 @@ def backtest_earnings_spreads(
     try:
         console.print("\n[bold cyan]📊 Earnings Calendar Spread Backtest[/bold cyan]\n")
 
+        # CRITICAL WARNING
+        console.print("[bold red]⚠️  WARNING: This backtest is currently NON-FUNCTIONAL[/bold red]")
+        console.print("[yellow]")
+        console.print("The IB API does NOT provide historical option chain snapshots.")
+        console.print("This backtest will return 0 trades until properly fixed.")
+        console.print()
+        console.print("What you CAN do:")
+        console.print("1. Use the validation system to check data availability")
+        console.print("2. Review docs/BACKTEST_QUICKSTART.md for implementation details")
+        console.print("3. Contribute a fixed implementation (PRs welcome!)")
+        console.print()
+        console.print("See: https://interactivebrokers.github.io/tws-api/historical_limitations.html")
+        console.print("[/yellow]")
+        console.print()
+
         # Import required modules
         console.print("Loading modules...", end=" ")
         try:

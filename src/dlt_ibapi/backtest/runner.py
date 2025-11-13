@@ -113,35 +113,38 @@ class OptionsBacktestResult:
 
 class OptionsBacktestRunner:
     """
-    Backtest runner for options strategies.
+    **DEPRECATED / NON-FUNCTIONAL**: This backtest runner is currently broken.
 
-    Simplified execution engine optimized for multi-leg options spreads:
-    - Date-based loop (daily frequency)
-    - Option chain fetching
-    - Spread signal generation and execution
-    - Position monitoring and exits
-    - Expiration handling
+    **ISSUE**: The IB API does NOT provide historical option chain snapshots.
+    This runner was designed assuming historical chains were available, but they're not.
 
-    Example:
-        >>> from dlt_ibapi.backtest import IBBacktestDataProvider, OptionsChainProvider
+    **CURRENT STATUS**:
+    - Will not crash but will skip ALL option signals
+    - Logs deprecation warning on first run
+    - Returns empty results (0 trades)
+
+    **PROPER IMPLEMENTATION NEEDED**:
+    See docs/BACKTEST_QUICKSTART.md for details on:
+    1. IB API data limitations
+    2. Alternative approaches using option bars
+    3. Deterministic option selection rules
+    4. Data collection requirements
+
+    **WORKAROUND**:
+    Until properly fixed, you can:
+    1. Use the validation system to check data availability
+    2. Manually implement earnings-driven backtest logic
+    3. Contribute a fixed implementation (PRs welcome!)
+
+    Original (broken) example:
+        >>> from dlt_ibapi.backtest import IBBacktestDataProvider
         >>> from tools.strategies.options import IVBasedCalendarSpreadStrategy
         >>>
         >>> data_provider = IBBacktestDataProvider("./data")
-        >>> chain_provider = OptionsChainProvider(data_provider.option_chain_reader)
-        >>> strategy = IVBasedCalendarSpreadStrategy(config, earnings_provider)
+        >>> # NOTE: OptionsChainProvider is deprecated - don't use
         >>>
-        >>> runner = OptionsBacktestRunner(
-        ...     strategy=strategy,
-        ...     data_provider=data_provider,
-        ...     option_chain_provider=chain_provider,
-        ...     initial_capital=100000,
-        ...     commission_per_contract=0.65,
-        ... )
-        >>>
-        >>> result = runner.run(
-        ...     start_date=date(2023, 1, 1),
-        ...     end_date=date(2024, 12, 31),
-        ... )
+        >>> runner = OptionsBacktestRunner(...)
+        >>> result = runner.run(...)  # Returns 0 trades
     """
 
     def __init__(
@@ -349,13 +352,29 @@ class OptionsBacktestRunner:
         return prices
 
     def _get_option_chains(self, timestamp: datetime) -> Dict[str, Any]:
-        """Get option chains for all symbols."""
-        chains = {}
-        for symbol in self.symbols:
-            chain = self.option_chain_provider.get_chain(symbol, timestamp)
-            if chain is not None:
-                chains[symbol] = chain
-        return chains
+        """
+        DEPRECATED: This method is non-functional.
+
+        The IB API does not provide historical option chain snapshots.
+        This method is kept to prevent crashes but always returns empty dict.
+
+        TODO: Rewrite backtest to use deterministic option selection:
+        1. Load earnings events
+        2. For each event, determine options using rules (ATM, DTE range)
+        3. Check if option bars exist using OptionBarsReader
+        4. Execute spread only if both legs have sufficient bar data
+
+        See: docs/BACKTEST_QUICKSTART.md for details
+        """
+        if not hasattr(self, '_chain_warning_logged'):
+            logger.warning(
+                "OptionsChainProvider is deprecated and non-functional. "
+                "Backtest will skip all option signal generation. "
+                "See docs/BACKTEST_QUICKSTART.md for proper implementation."
+            )
+            self._chain_warning_logged = True
+
+        return {}  # Always return empty - option chains not available
 
     def _handle_expirations(self, current_date: date):
         """Close expired positions."""

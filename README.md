@@ -6,27 +6,28 @@ DLT connector for Interactive Brokers - ingest market data from IB Gateway/TWS i
 
 - [Overview](#overview)
 - [Installation](#installation)
-- [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
-- [Data Storage](#data-storage)
-- [Historical Data Backfilling](#historical-data-backfilling)
-- [Orchestration with Dagster](#orchestration-with-dagster)
-- [Backtesting](#backtesting)
+- [Documentation](#documentation)
+- [Features](#features)
+  - [Data Storage](#data-storage)
+  - [Historical Data Backfilling](#historical-data-backfilling)
+  - [Orchestration with Dagster](#orchestration-with-dagster)
+  - [Backtesting](#backtesting)
 - [Configuration](#configuration)
-  - [YAML Configuration](#method-1-yaml-configuration-recommended)
-  - [Environment Variables](#method-2-environment-variables)
-  - [Python Configuration](#method-3-python-configuration-pydantic-models)
-  - [CLI Commands](#method-4-cli-commands)
 - [Notebooks](#notebooks)
-- [API Reference](#api-reference)
-- [Data Schema](#data-schema)
-- [Working with Loaded Data](#working-with-loaded-data)
-- [Data Transformation](#data-transformation)
-- [Architecture](#architecture)
-- [CLI Reference](#cli-reference)
 - [Development](#development)
-- [Examples](#examples)
 - [Troubleshooting](#troubleshooting)
+
+## Documentation
+
+Detailed documentation is available in the `docs/` directory:
+
+- **[Backfill Guide](docs/BACKFILL_GUIDE.md)** - Complete guide to historical data backfilling with gap detection
+- **[Backtest Quick Start](docs/BACKTEST_QUICKSTART.md)** - Options backtesting guide (⚠️ see IB API limitations)
+- **[API Reference](docs/API_REFERENCE.md)** - Complete Python API documentation
+- **[Architecture](docs/ARCHITECTURE.md)** - DLT vs Dagster layer separation
+- **[CLI Architecture](docs/CLI_ARCHITECTURE.md)** - CLI refactoring and modular design
+- **[Parquet Migration](docs/PARQUET_MIGRATION.md)** - Parquet-first storage architecture
 
 ## Overview
 
@@ -166,7 +167,9 @@ options = ib_option_chain(
 pipeline.run(options)
 ```
 
-## Data Storage
+## Features
+
+### Data Storage
 
 `dlt-ibapi` uses **Parquet files with Hive-style partitioning** for optimal storage and query performance.
 
@@ -238,9 +241,11 @@ symbols = reader.get_available_symbols("1 day")
 date_range = reader.get_date_range("AAPL", "1 day")
 ```
 
-## Historical Data Backfilling
+### Historical Data Backfilling
 
 `dlt-ibapi` provides comprehensive backfill infrastructure for **gap-aware historical data collection** with intelligent contract selection for options.
+
+> **📖 See [Backfill Guide](docs/BACKFILL_GUIDE.md) for complete documentation**
 
 ### Key Features
 
@@ -452,9 +457,11 @@ For comprehensive documentation:
 - **Examples**: [examples/](examples/) - Working code samples
 - **Notebooks**: [notebooks/](notebooks/) - Interactive Jupyter notebooks
 
-## Orchestration with Dagster
+### Orchestration with Dagster
 
 For production deployments with scheduling, monitoring, and automation, use the **Dagster orchestration layer**:
+
+> **📖 See [Architecture Guide](docs/ARCHITECTURE.md) for DLT vs Dagster layer separation**
 
 ```bash
 cd ../dagster-ib-pipeline
@@ -504,10 +511,12 @@ IB API → DLT Ingestion (dlt-ibapi) → Raw Parquet
 - Schedulable: Automated data collection during market hours
 - Monitorable: Track asset materialization and data quality
 
-## Backtesting
+### Backtesting
 
-> **⚠️ CRITICAL WARNING**: The backtest is currently **NON-FUNCTIONAL** due to IB API limitations. The IB API does not provide historical option chain snapshots (see [IB API limitations](https://interactivebrokers.github.io/tws-api/historical_limitations.html)). The current implementation will return 0 trades until properly reimplemented. See [`docs/BACKTEST_QUICKSTART.md`](docs/BACKTEST_QUICKSTART.md) for details on:
-> - What data IS and IS NOT available from IB API
+> **⚠️ CRITICAL WARNING**: The backtest is currently **NON-FUNCTIONAL** due to IB API limitations.
+>
+> **📖 See [Backtest Quick Start](docs/BACKTEST_QUICKSTART.md) for complete details** on:
+> - What data IS and IS NOT available from IB API ([official IB API limitations](https://interactivebrokers.github.io/tws-api/historical_limitations.html))
 > - How to use the validation system to check data availability
 > - Required approach using deterministic option selection + pre-collected option bars
 > - Data collection workflow for future backtesting
@@ -906,7 +915,9 @@ dlt-ibapi fetch --help
 
 ## API Reference
 
-### Resources
+> **📖 See [API Reference](docs/API_REFERENCE.md) for complete Python API documentation**
+
+### Resources (Quick Reference)
 
 #### `ib_historical_bars`
 Fetches OHLCV bar data for a single symbol.
@@ -1460,6 +1471,9 @@ All transformers ensure:
 ---
 
 ## Architecture
+
+> **📖 See [Architecture Guide](docs/ARCHITECTURE.md) for DLT vs Dagster layer separation**
+> **📖 See [CLI Architecture](docs/CLI_ARCHITECTURE.md) for CLI design patterns**
 
 ```
 dlt-ibapi (DLT connector)
