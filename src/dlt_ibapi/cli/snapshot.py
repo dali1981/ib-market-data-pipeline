@@ -5,6 +5,7 @@ Uses Pydantic models for type safety and dependency injection for I/O.
 """
 
 import time
+import logging
 from typing import Optional, Callable, Any
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import dlt
 from dlt_ibapi.cli.models import (
     SnapshotParams,
     SnapshotResult,
+    BatchSnapshotResult,
     ListSnapshotsParams,
     ListSnapshotsResult,
     SnapshotInfo,
@@ -20,10 +22,9 @@ from dlt_ibapi.cli.models import (
 from dlt_ibapi.config import IBConnectionConfig
 from dlt_ibapi.config_loader import get_connection_config
 from dlt_ibapi.backfill import snapshot_option_chain
-from dlt_ibapi.repositories import OptionChainSnapshotReader
-from dlt_ibapi.utils.logging import get_logger
+from dlt_ibapi.repositories import OptionChainSnapshotReader, EarningsCalendarReader
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def execute_snapshot(
@@ -60,17 +61,14 @@ def execute_snapshot(
 
     try:
         logger.info(
-            "starting_snapshot",
-            underlying=params.underlying,
-            snapshot_date=str(params.snapshot_date),
-            min_dte=params.min_dte,
-            max_dte=params.max_dte,
+            f"Starting snapshot: underlying={params.underlying}, "
+            f"snapshot_date={params.snapshot_date}, min_dte={params.min_dte}, max_dte={params.max_dte}"
         )
 
         # Create config if not provided
         if connection_config is None:
             connection_config = get_connection_config()
-            logger.debug("loaded_connection_config")
+            logger.debug("Loaded connection config")
 
         # Check for future dates
         from datetime import date as date_type
@@ -78,15 +76,15 @@ def execute_snapshot(
             warnings.append(
                 f"Snapshot date {params.snapshot_date} is in the future. Data may not be available."
             )
-            logger.warning("future_snapshot_date", date=str(params.snapshot_date))
+            logger.warning(f"Future snapshot date: {params.snapshot_date}")
 
         # Create pipeline (or use injected mock for testing)
         if pipeline_factory:
-            logger.debug("using_injected_pipeline_factory")
+            logger.debug("Using injected pipeline factory")
             pipeline = pipeline_factory(params)
         else:
             # Production path: create real DLT pipeline
-            logger.info("creating_dlt_pipeline", name=params.pipeline_name)
+            logger.info(f"Creating DLT pipeline: {params.pipeline_name}")
             pipeline = dlt.pipeline(
                 pipeline_name=params.pipeline_name,
                 destination=dlt.destinations.filesystem(bucket_url="data"),
@@ -94,7 +92,7 @@ def execute_snapshot(
             )
 
         # Create snapshot resource
-        logger.debug("creating_snapshot_resource")
+        logger.debug("Creating snapshot resource")
         data = snapshot_option_chain(
             underlying=params.underlying,
             snapshot_date=params.snapshot_date,
@@ -105,24 +103,56 @@ def execute_snapshot(
         )
 
         # Run pipeline
-        logger.info("running_pipeline")
+        logger.info("Running pipeline")
         info = pipeline.run(data, write_disposition="replace", loader_file_format="parquet")
 
         if info.has_failed_jobs:
             warnings.append("Pipeline jobs failed")
-            logger.warning("pipeline_jobs_failed")
+            logger.warning("Pipeline jobs failed")
 
         # Calculate metrics
         duration = time.time() - start_time
 
-        # TODO: Extract actual counts from data
+        # Extract counts by reading back the snapshot we just wrote
         expirations_count = 0
         strikes_count = 0
 
+        if not info.has_failed_jobs:
+            try:
+                # Read back snapshot to get accurate counts
+                from dlt_ibapi.repositories import OptionChainSnapshotReader
+
+                reader = OptionChainSnapshotReader(
+                    database_path="data",
+                    dataset_name=params.dataset_name,
+                )
+
+                # Get snapshot for this underlying
+                snapshot_df = reader.get_chain_for_date(
+                    underlying=params.underlying,
+                    as_of=params.snapshot_date,
+                    min_dte=params.min_dte,
+                    max_dte=params.max_dte,
+                )
+
+                if not snapshot_df.empty:
+                    # Count unique expirations and strikes from first row (SMART exchange)
+                    # Each row has arrays of expirations/strikes, all exchanges have same data
+                    first_row = snapshot_df.iloc[0]
+                    if "expirations" in first_row and first_row["expirations"]:
+                        expirations_count = len(first_row["expirations"])
+                    if "strikes" in first_row and first_row["strikes"]:
+                        strikes_count = len(first_row["strikes"])
+
+            except Exception as e:
+                logger.warning(f"Could not extract counts from snapshot: {e}")
+                # Fallback to row count
+                expirations_count = 0
+                strikes_count = 0
+
         logger.info(
-            "snapshot_complete",
-            underlying=params.underlying,
-            duration=duration,
+            f"Snapshot complete: underlying={params.underlying}, "
+            f"expirations={expirations_count}, strikes={strikes_count}, duration={duration:.1f}s"
         )
 
         return SnapshotResult(
@@ -138,7 +168,7 @@ def execute_snapshot(
 
     except Exception as e:
         duration = time.time() - start_time
-        logger.error("snapshot_failed", error=str(e), duration=duration)
+        logger.error(f"Snapshot failed: {e}", exc_info=True)
 
         return SnapshotResult(
             success=False,
@@ -150,6 +180,221 @@ def execute_snapshot(
             duration_seconds=duration,
             error=str(e),
             warnings=warnings,
+        )
+
+
+def execute_batch_snapshot_for_earnings(
+    params: SnapshotParams,
+    connection_config: Optional[IBConnectionConfig] = None,
+    pipeline_factory: Optional[Callable[[SnapshotParams], Any]] = None,
+    earnings_reader: Optional[EarningsCalendarReader] = None,
+    progress_callback: Optional[Callable[[str, int, int], None]] = None,
+) -> BatchSnapshotResult:
+    """Execute batch snapshot for all symbols with earnings on a specific date.
+
+    Pure business logic with no CLI dependencies. All I/O is injectable.
+
+    Args:
+        params: Validated snapshot parameters with earnings_date set (Pydantic model)
+        connection_config: IB connection config (optional, auto-loads if None)
+        pipeline_factory: Optional factory for creating pipelines (for testing)
+        earnings_reader: Optional earnings reader (for testing with mocks)
+        progress_callback: Optional callback(symbol, current, total) for progress updates
+
+    Returns:
+        BatchSnapshotResult with aggregated results from all symbols
+
+    Example:
+        >>> params = SnapshotParams(
+        ...     earnings_date=date(2025, 11, 13),
+        ...     snapshot_date=date(2025, 11, 13),
+        ...     min_dte=0,
+        ...     max_dte=7,
+        ...     pipeline_name="ib_options",
+        ... )
+        >>> result = execute_batch_snapshot_for_earnings(params)
+        >>> assert result.success
+        >>> assert result.total_symbols > 0
+    """
+    start_time = time.time()
+    warnings = []
+    individual_results = []
+    failed_symbols = []
+
+    try:
+        # Validate that earnings_date is set
+        if not params.earnings_date:
+            raise ValueError("earnings_date must be set for batch snapshot")
+
+        logger.info(
+            f"Starting batch snapshot: earnings_date={params.earnings_date}, "
+            f"snapshot_date={params.snapshot_date}, min_dte={params.min_dte}, max_dte={params.max_dte}"
+        )
+
+        # Create earnings reader if not provided
+        if earnings_reader is None:
+            earnings_reader = EarningsCalendarReader(
+                database_path=str(params.database_path),
+                dataset_name=params.earnings_dataset_name,
+            )
+            logger.debug("Created earnings reader")
+
+        # Query earnings for the specific date
+        logger.info(f"Querying earnings for {params.earnings_date}")
+        earnings_df = earnings_reader.get_earnings_on_date(
+            earnings_date=params.earnings_date,
+        )
+
+        if earnings_df.empty:
+            logger.warning(f"No earnings found for {params.earnings_date}")
+            duration = time.time() - start_time
+            return BatchSnapshotResult(
+                success=True,  # Success but no data
+                earnings_date=params.earnings_date,
+                snapshot_date=params.snapshot_date,
+                total_symbols=0,
+                successful_snapshots=0,
+                failed_snapshots=0,
+                failed_symbols=[],
+                pipeline_name=params.pipeline_name,
+                duration_seconds=duration,
+                warnings=["No earnings found for the specified date"],
+            )
+
+        # Apply earnings time filter if provided
+        if params.earnings_time_filter:
+            logger.info(f"Applying earnings time filter: {params.earnings_time_filter}")
+            earnings_df = earnings_df[earnings_df['earnings_time'] == params.earnings_time_filter]
+
+            if earnings_df.empty:
+                logger.warning(f"No earnings after time filter: {params.earnings_time_filter}")
+                duration = time.time() - start_time
+                return BatchSnapshotResult(
+                    success=True,
+                    earnings_date=params.earnings_date,
+                    snapshot_date=params.snapshot_date,
+                    total_symbols=0,
+                    successful_snapshots=0,
+                    failed_snapshots=0,
+                    failed_symbols=[],
+                    pipeline_name=params.pipeline_name,
+                    duration_seconds=duration,
+                    warnings=[f"No earnings found with time filter: {params.earnings_time_filter}"],
+                )
+
+        # Extract unique symbols
+        symbols = earnings_df['symbol'].unique().tolist()
+        total_symbols = len(symbols)
+
+        logger.info(f"Found {total_symbols} symbols with earnings: {', '.join(symbols[:10])}{'...' if total_symbols > 10 else ''}")
+
+        # Create connection config if not provided
+        if connection_config is None:
+            connection_config = get_connection_config()
+            logger.debug("Loaded connection config")
+
+        # Process each symbol
+        for i, symbol in enumerate(symbols, 1):
+            logger.info(f"Processing symbol {i}/{total_symbols}: {symbol}")
+
+            # Call progress callback if provided
+            if progress_callback:
+                progress_callback(symbol, i, total_symbols)
+
+            try:
+                # Create params for this symbol
+                symbol_params = SnapshotParams(
+                    underlying=symbol,
+                    snapshot_date=params.snapshot_date,
+                    min_dte=params.min_dte,
+                    max_dte=params.max_dte,
+                    pipeline_name=params.pipeline_name,
+                    dataset_name=params.dataset_name,
+                    cache_path=params.cache_path,
+                    database_path=params.database_path,
+                    earnings_dataset_name=params.earnings_dataset_name,
+                )
+
+                # Execute snapshot for this symbol
+                result = execute_snapshot(
+                    params=symbol_params,
+                    connection_config=connection_config,
+                    pipeline_factory=pipeline_factory,
+                )
+
+                individual_results.append(result)
+
+                if not result.success:
+                    failed_symbols.append(symbol)
+                    logger.warning(f"✗ {symbol}: {result.error}")
+                else:
+                    logger.info(
+                        f"✓ {symbol}: {result.expirations_count} expirations, "
+                        f"{result.strikes_count} strikes ({result.duration_seconds:.1f}s)"
+                    )
+
+                # Collect warnings
+                if result.warnings:
+                    warnings.extend([f"{symbol}: {w}" for w in result.warnings])
+
+            except Exception as e:
+                # Log error but continue with next symbol
+                logger.error(f"✗ {symbol}: Exception: {e}")
+                failed_symbols.append(symbol)
+
+                # Create failed result for tracking
+                failed_result = SnapshotResult(
+                    success=False,
+                    underlying=symbol,
+                    snapshot_date=params.snapshot_date,
+                    expirations_count=0,
+                    strikes_count=0,
+                    pipeline_name=params.pipeline_name,
+                    duration_seconds=0.0,
+                    error=str(e),
+                )
+                individual_results.append(failed_result)
+
+        # Calculate final stats
+        successful = sum(1 for r in individual_results if r.success)
+        failed = len(failed_symbols)
+        duration = time.time() - start_time
+
+        logger.info(
+            f"Batch snapshot complete: {successful}/{total_symbols} succeeded, "
+            f"{failed} failed, duration={duration:.1f}s"
+        )
+
+        return BatchSnapshotResult(
+            success=successful > 0,  # Success if at least one succeeded
+            earnings_date=params.earnings_date,
+            snapshot_date=params.snapshot_date,
+            total_symbols=total_symbols,
+            successful_snapshots=successful,
+            failed_snapshots=failed,
+            failed_symbols=failed_symbols,
+            pipeline_name=params.pipeline_name,
+            duration_seconds=duration,
+            warnings=warnings,
+            individual_results=individual_results,
+        )
+
+    except Exception as e:
+        duration = time.time() - start_time
+        logger.error(f"Batch snapshot failed: {e}", exc_info=True)
+
+        return BatchSnapshotResult(
+            success=False,
+            earnings_date=params.earnings_date or params.snapshot_date,  # Fallback if earnings_date not set
+            snapshot_date=params.snapshot_date,
+            total_symbols=0,
+            successful_snapshots=0,
+            failed_snapshots=0,
+            failed_symbols=[],
+            pipeline_name=params.pipeline_name,
+            duration_seconds=duration,
+            warnings=warnings,
+            individual_results=individual_results,
         )
 
 
@@ -177,11 +422,7 @@ def execute_list_snapshots(
     start_time = time.time()
 
     try:
-        logger.info(
-            "listing_snapshots",
-            underlying=params.underlying,
-            database_path=str(params.database_path),
-        )
+        logger.info(f"Listing snapshots: underlying={params.underlying}, database={params.database_path}")
 
         # Create reader if not provided
         if reader is None:
@@ -189,10 +430,10 @@ def execute_list_snapshots(
                 database_path=str(params.database_path),
                 dataset_name=params.dataset_name,
             )
-            logger.debug("created_reader")
+            logger.debug("Created reader")
 
         # Query snapshots
-        logger.debug("querying_snapshots")
+        logger.debug("Querying snapshots")
         snapshots_data = reader.get_snapshots(
             underlying=params.underlying,
             start_date=params.start_date,
@@ -212,11 +453,7 @@ def execute_list_snapshots(
 
         duration = time.time() - start_time
 
-        logger.info(
-            "list_snapshots_complete",
-            total=len(snapshots),
-            duration=duration,
-        )
+        logger.info(f"List snapshots complete: {len(snapshots)} found, duration={duration:.1f}s")
 
         return ListSnapshotsResult(
             success=True,
@@ -227,7 +464,7 @@ def execute_list_snapshots(
 
     except Exception as e:
         duration = time.time() - start_time
-        logger.error("list_snapshots_failed", error=str(e), duration=duration)
+        logger.error(f"List snapshots failed: {e}", exc_info=True)
 
         return ListSnapshotsResult(
             success=False,
