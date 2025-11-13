@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 ┌─────────────────────────────────────────┐
-│ CLI Layer (src/dlt_ibapi/cli.py)       │
+│ CLI Layer (src/dlt_ibapi/cli_app.py)   │
 │ - Command interface                     │
 │ - Uses --pipeline-name (new)           │
 └─────────────────┬───────────────────────┘
@@ -64,11 +64,14 @@ CLI Layer (Typer) → Pydantic Models → Business Logic → Pydantic Results �
 ```
 
 **Structure**:
+- `cli_app.py` - Main CLI entry point (Typer commands, presentation layer)
 - `cli/models.py` - Pydantic models for all CLI commands (params + results)
 - `cli/backfill.py` - Backfill business logic (equity + options)
 - `cli/snapshot.py` - Snapshot business logic
 - `cli/stats.py` - Stats business logic
 - `utils/logging.py` - Structured logging utilities
+
+**Note**: The main CLI file is named `cli_app.py` (not `cli.py`) to avoid naming conflicts with the `cli/` package directory. Python prioritizes packages over modules when both have the same name.
 
 **Pattern**:
 ```python
@@ -416,7 +419,8 @@ def test_gap_detection_with_business_days():
 - `src/dlt_ibapi/sources.py` - Basic DLT resources (historical bars, contract details)
 - `src/dlt_ibapi/backfill/resources.py` - Backfill DLT resources with gap detection
 - `src/dlt_ibapi/transformers.py` - Data normalization functions
-- `src/dlt_ibapi/cli.py` - CLI commands
+- `src/dlt_ibapi/cli_app.py` - CLI entry point (Typer commands)
+- `src/dlt_ibapi/cli/` - CLI business logic package (models, execution functions)
 
 **Configuration**:
 - `src/dlt_ibapi/config.py` - Pydantic config models

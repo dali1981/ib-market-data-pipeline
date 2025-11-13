@@ -11,8 +11,9 @@ loader_file_format = "parquet"
 bucket_url = "data"
 
 # Layout template for organizing Parquet files
-# Partitioning by table_name, date, and symbol for efficient queries
-layout = "{table_name}/date={date}/symbol={symbol}"
+# Use standard DLT placeholders: {table_name} and {load_id}
+# Custom partitioning by date/symbol is handled by DLT resources via columns config
+layout = "{table_name}/{load_id}.{file_id}.{ext}"
 
 # No credentials section needed for local filesystem
 # For cloud storage (S3/GCS/Azure), add credentials to .dlt/secrets.toml

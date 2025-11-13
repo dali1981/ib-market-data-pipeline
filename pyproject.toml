@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-dlt-ibapi = "dlt_ibapi.cli:main"
+dlt-ibapi = "dlt_ibapi.cli_app:main"
 
 [project.optional-dependencies]
 dev = [

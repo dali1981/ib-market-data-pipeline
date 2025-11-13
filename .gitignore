@@ -56,3 +56,13 @@ Thumbs.db
 
 # Logs
 *.log
+
+*.json
+*.txt
+
+.dlt
+.idea
+.tmp_dagster_home_*
+
+*.pyc
+
