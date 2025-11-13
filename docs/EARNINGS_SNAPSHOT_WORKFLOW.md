@@ -214,6 +214,13 @@ Contract Resolution Summary
 - Futures/options symbols in earnings data
 - Typos or invalid tickers
 
+**Note on Options Availability:**
+- Contract resolution validates that a symbol exists in IB's database
+- It does NOT check if the symbol has listed options
+- Many small-cap/micro-cap stocks don't have options
+- Snapshot will succeed but show "0 expirations, 0 strikes" for these symbols
+- This is expected behavior - not all stocks have options listed
+
 ---
 
 ### Step 4: Snapshot Option Chains (Batch)
@@ -537,11 +544,30 @@ print(f"Captured {result.successful_snapshots}/{result.total_symbols} snapshots"
 
 ## Troubleshooting
 
-### Issue: "No option chain parameters found for SYMBOL"
+### Issue: Snapshot shows "0 expirations, 0 strikes" for many symbols
 
-**Cause:** Symbol does not have options listed on Interactive Brokers.
+**Cause:** Many small-cap and micro-cap stocks don't have listed options.
 
-**Solution:** This is expected for small-cap stocks. The batch snapshot will skip these symbols and continue.
+**Explanation:**
+- Contract resolution (`resolve-contracts`) only validates that a symbol EXISTS in IB's database
+- It does NOT check if the symbol has listed options
+- Snapshot succeeds but returns empty data (0 expirations/strikes)
+- This is **expected behavior**, not an error
+
+**Which symbols have options?**
+Generally, only stocks with:
+- Market cap > $1B
+- Average daily volume > 1M shares
+- Listed on major exchanges (NYSE, NASDAQ)
+- Not penny stocks or OTC
+
+**Solution:**
+- This is normal - batch snapshot handles it gracefully
+- No action needed - empty snapshots are valid
+- Filter your earnings list to large-cap stocks if you want to avoid empties
+- Use market cap / volume filters when loading earnings data
+
+**Example filtering:** - `dlt-ibapi load-earnings earnings.json --symbols AAPL MSFT GOOGL DIS AMAT`
 
 ---
 

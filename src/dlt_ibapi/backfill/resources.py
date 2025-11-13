@@ -102,7 +102,8 @@ def snapshot_option_chain(
         )
 
         if not params:
-            log.warning(f"No option chain parameters found for {underlying}")
+            # This is expected for symbols without listed options (small-cap stocks)
+            log.debug(f"No option chain parameters found for {underlying} (symbol has no listed options)")
             return
 
         # Step 3: Transform and yield snapshots
