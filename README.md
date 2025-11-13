@@ -11,6 +11,7 @@ DLT connector for Interactive Brokers - ingest market data from IB Gateway/TWS i
 - [Data Storage](#data-storage)
 - [Historical Data Backfilling](#historical-data-backfilling)
 - [Orchestration with Dagster](#orchestration-with-dagster)
+- [Backtesting](#backtesting)
 - [Configuration](#configuration)
   - [YAML Configuration](#method-1-yaml-configuration-recommended)
   - [Environment Variables](#method-2-environment-variables)
@@ -502,6 +503,155 @@ IB API → DLT Ingestion (dlt-ibapi) → Raw Parquet
 - Idempotent: Re-runs don't create duplicates
 - Schedulable: Automated data collection during market hours
 - Monitorable: Track asset materialization and data quality
+
+## Backtesting
+
+`dlt-ibapi` includes a production-ready **options backtesting framework** for earnings calendar spread strategies.
+
+### Features
+
+- **Three Strategy Variants**:
+  - `generic_calendar` - Baseline calendar spreads with IV term structure checks
+  - `pre_earnings` - Calendar spreads timed around earnings announcements
+  - `iv_based` - Most selective strategy with strict IV filtering
+
+- **Complete Execution Engine**:
+  - Multi-leg spread execution with atomic fills
+  - Greeks tracking (Delta, Gamma, Vega, Theta, Rho, IV)
+  - Position monitoring and automated exits
+  - Expiration handling
+  - Commission tracking ($0.65/contract default)
+
+- **Results Export**:
+  - Performance summary (JSON)
+  - Equity curve (CSV)
+  - Individual trades (CSV)
+  - Equity curve plot (PNG)
+
+### Quick Start
+
+```bash
+# 1. Verify you have required data
+uv run dlt-ibapi stats ./data --dataset stocks
+uv run dlt-ibapi stats ./data --dataset options
+uv run dlt-ibapi stats ./data --dataset option_chains
+
+# 2. Run backtest
+uv run dlt-ibapi backtest-earnings-spreads \
+    --strategy iv_based \
+    --symbols AAPL MSFT GOOGL \
+    --start-date 2023-01-01 \
+    --end-date 2024-12-31 \
+    --capital 100000
+
+# 3. View results
+cat backtest_results/summary_*.json
+open backtest_results/equity_curve_*.png
+```
+
+### Performance Metrics
+
+- Total Return (%, $)
+- Win Rate (%)
+- Profit Factor
+- Maximum Drawdown (%, $)
+- Average Win/Loss
+- Number of Trades
+
+### Example Output
+
+```
+📈 Backtest Results
+
+┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓
+┃ Metric                ┃ Value            ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━┩
+│ Initial Capital       │ $100,000         │
+│ Final Value           │ $115,234         │
+│ Total Return          │ $15,234.50       │
+│ Total Return %        │ 15.23%           │
+│ Number of Trades      │ 42               │
+│ Win Rate              │ 66.7%            │
+│ Profit Factor         │ 2.17             │
+│ Max Drawdown %        │ 4.57%            │
+└───────────────────────┴──────────────────┘
+
+Exporting results to ./backtest_results...
+  ✓ Summary: summary_iv_based_2023-01-01_2024-12-31.json
+  ✓ Equity curve: equity_curve_iv_based_2023-01-01_2024-12-31.csv
+  ✓ Trades: trades_iv_based_2023-01-01_2024-12-31.csv
+  ✓ Equity curve plot: equity_curve_iv_based_2023-01-01_2024-12-31.png
+```
+
+### Documentation
+
+- **[docs/BACKTEST_QUICKSTART.md](docs/BACKTEST_QUICKSTART.md)** - Complete guide with data download, verification, and troubleshooting
+- **[BACKTEST_IMPLEMENTATION_SUMMARY.md](BACKTEST_IMPLEMENTATION_SUMMARY.md)** - Technical implementation details
+- **[BACKTEST_IMPLEMENTATION_PLAN.md](BACKTEST_IMPLEMENTATION_PLAN.md)** - Architecture and design patterns
+
+### Python API
+
+```python
+from datetime import date
+from tools.strategies.options import IVBasedCalendarSpreadStrategy, IVBasedConfig
+from dlt_ibapi.backtest import (
+    IBBacktestDataProvider,
+    EarningsCalendarProvider,
+    OptionsChainProvider,
+    OptionsBacktestRunner,
+)
+
+# Initialize data providers
+data_provider = IBBacktestDataProvider("./data")
+earnings_provider = EarningsCalendarProvider("./data/earnings_calendar")
+chain_provider = OptionsChainProvider(data_provider.option_chain_reader)
+
+# Configure strategy
+config = IVBasedConfig(
+    underlying_symbols=["AAPL", "MSFT", "GOOGL"],
+    entry_window=(10, 25),
+    exit_buffer=2,
+    iv_contango_min=0.05,
+    profit_target=0.30,
+)
+
+strategy = IVBasedCalendarSpreadStrategy(config, earnings_provider)
+
+# Run backtest
+runner = OptionsBacktestRunner(strategy, data_provider, chain_provider, 100000)
+result = runner.run(date(2023, 1, 1), date(2024, 12, 31))
+
+# Analyze results
+print(f"Return: {result.total_return_pct:.2f}%")
+print(f"Win Rate: {result.winning_trades / result.num_trades * 100:.1f}%")
+```
+
+### Architecture
+
+The backtesting framework extends the shared `tools/` backtesting infrastructure with options-specific capabilities:
+
+```
+┌─────────────────────────────────────────┐
+│ tools/ (Shared Framework)              │
+│ - Portfolio manager with options       │
+│ - Multi-leg spread executor             │
+│ - Greeks models and calculations        │
+│ - Strategy base classes                 │
+└─────────────────┬───────────────────────┘
+                  │
+┌─────────────────▼───────────────────────┐
+│ dlt-ibapi/ (IB Integration)            │
+│ - Data providers (Parquet → tools/)    │
+│ - Options backtest runner               │
+│ - CLI command                           │
+└─────────────────────────────────────────┘
+```
+
+**Key Features**:
+- ✅ No code duplication (DRY principle)
+- ✅ Type-safe with Pydantic models
+- ✅ Backward compatible with equity strategies
+- ✅ Clean separation of concerns
 
 ## Notebooks
 
