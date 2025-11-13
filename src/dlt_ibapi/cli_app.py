@@ -863,6 +863,186 @@ def stats(
 
 
 @app.command()
+def backtest_earnings_spreads(
+    strategy: str = typer.Option(
+        "iv_based",
+        "--strategy",
+        "-s",
+        help="Strategy type: generic_calendar, pre_earnings, or iv_based",
+    ),
+    symbols: List[str] = typer.Option(
+        ["AAPL", "MSFT"],
+        "--symbols",
+        help="Underlying symbols to trade",
+    ),
+    start_date: str = typer.Option(
+        "2023-01-01",
+        "--start-date",
+        help="Backtest start date (YYYY-MM-DD)",
+    ),
+    end_date: str = typer.Option(
+        "2024-12-31",
+        "--end-date",
+        help="Backtest end date (YYYY-MM-DD)",
+    ),
+    initial_capital: float = typer.Option(
+        100000,
+        "--capital",
+        "-c",
+        help="Initial capital (USD)",
+    ),
+    data_path: str = typer.Option(
+        "./data",
+        "--data-path",
+        "-d",
+        help="Path to Parquet data directory",
+    ),
+    earnings_path: str = typer.Option(
+        "./data/earnings_calendar",
+        "--earnings-path",
+        "-e",
+        help="Path to earnings calendar data",
+    ),
+    output_dir: str = typer.Option(
+        "./backtest_results",
+        "--output",
+        "-o",
+        help="Output directory for results",
+    ),
+):
+    """
+    Backtest earnings calendar spread strategies.
+
+    Runs options backtests using historical data from Parquet files.
+    Supports three strategy variants:
+    - generic_calendar: Standard calendar spreads
+    - pre_earnings: Timed around earnings announcements
+    - iv_based: With strict IV term structure filtering
+
+    Example:
+        dlt-ibapi backtest-earnings-spreads \\
+            --strategy iv_based \\
+            --symbols AAPL MSFT GOOGL \\
+            --start-date 2023-01-01 \\
+            --end-date 2024-12-31 \\
+            --capital 100000
+    """
+    try:
+        console.print("\n[bold cyan]📊 Earnings Calendar Spread Backtest[/bold cyan]\n")
+
+        # Import required modules
+        console.print("Loading modules...", end=" ")
+        try:
+            from tools.strategies.options import (
+                CalendarSpreadStrategy,
+                CalendarSpreadConfig,
+                PreEarningsCalendarSpreadStrategy,
+                PreEarningsConfig,
+                IVBasedCalendarSpreadStrategy,
+                IVBasedConfig,
+            )
+            from dlt_ibapi.backtest import (
+                IBBacktestDataProvider,
+                EarningsCalendarProvider,
+            )
+            console.print("[green]✓[/green]")
+        except ImportError as e:
+            console.print(f"[red]✗[/red]\n[red]Error: {e}[/red]")
+            console.print("\nMake sure 'tools' package is installed:")
+            console.print("  cd ../tools && uv sync")
+            raise typer.Exit(1)
+
+        # Parse dates
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+
+        # Initialize data providers
+        console.print("Initializing data providers...", end=" ")
+        data_provider = IBBacktestDataProvider(data_path)
+        earnings_provider = EarningsCalendarProvider(earnings_path)
+        console.print("[green]✓[/green]")
+
+        # Create strategy configuration
+        console.print(f"Configuring {strategy} strategy...", end=" ")
+
+        if strategy == "generic_calendar":
+            config = CalendarSpreadConfig(
+                underlying_symbols=symbols,
+                front_dte_range=(10, 20),
+                back_dte_range=(30, 50),
+                strike_selection="ATM",
+                option_type="C",
+                profit_target=0.30,
+                stop_loss=-0.50,
+            )
+            strat = CalendarSpreadStrategy(config)
+
+        elif strategy == "pre_earnings":
+            config = PreEarningsConfig(
+                underlying_symbols=symbols,
+                entry_window=(10, 25),
+                exit_buffer=2,
+                front_dte_range=(14, 25),
+                back_dte_range=(35, 60),
+                option_type="C",
+                profit_target=0.30,
+            )
+            strat = PreEarningsCalendarSpreadStrategy(config, earnings_provider)
+
+        elif strategy == "iv_based":
+            config = IVBasedConfig(
+                underlying_symbols=symbols,
+                entry_window=(10, 25),
+                exit_buffer=2,
+                iv_contango_min=0.05,
+                iv_percentile_max=50.0,
+                front_dte_range=(14, 25),
+                back_dte_range=(35, 60),
+                option_type="C",
+            )
+            strat = IVBasedCalendarSpreadStrategy(config, earnings_provider)
+
+        else:
+            console.print(f"[red]✗[/red]\n[red]Unknown strategy: {strategy}[/red]")
+            console.print("Valid strategies: generic_calendar, pre_earnings, iv_based")
+            raise typer.Exit(1)
+
+        console.print("[green]✓[/green]")
+
+        # Display configuration
+        table = Table(title="Backtest Configuration")
+        table.add_column("Parameter", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Strategy", strategy)
+        table.add_row("Symbols", ", ".join(symbols))
+        table.add_row("Start Date", start_date)
+        table.add_row("End Date", end_date)
+        table.add_row("Initial Capital", f"${initial_capital:,.0f}")
+        table.add_row("Data Path", data_path)
+
+        console.print(table)
+        console.print()
+
+        # TODO: Implement full backtest execution
+        # For now, show that configuration is working
+
+        console.print("[yellow]⚠️  Note:[/yellow] Full backtest execution coming soon!")
+        console.print("Next steps:")
+        console.print("1. Implement backtest engine integration")
+        console.print("2. Add results export (equity curve, trades, metrics)")
+        console.print("3. Add performance visualization")
+
+        console.print("\n[green]✓ Configuration validated successfully[/green]")
+
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        import traceback
+        console.print(traceback.format_exc())
+        raise typer.Exit(1)
+
+
+@app.command()
 def version():
     """Show dlt-ibapi version."""
     from . import __version__
