@@ -13,7 +13,7 @@ Pattern: Use frozen=True for immutability, Field for validation.
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 from datetime import date
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 
 # Backfill Equity Models
@@ -134,16 +134,37 @@ class BackfillOptionsResult(BaseModel):
 # Snapshot Models
 
 class SnapshotParams(BaseModel):
-    """Parameters for option chain snapshot operation."""
+    """Parameters for option chain snapshot operation.
+
+    Supports two modes:
+    1. Single symbol snapshot: Provide 'underlying'
+    2. Batch earnings snapshot: Provide 'earnings_date'
+
+    Either 'underlying' OR 'earnings_date' must be provided (mutually exclusive).
+    """
     model_config = ConfigDict(frozen=True)
 
-    underlying: str = Field(..., min_length=1, description="Underlying symbol")
+    underlying: Optional[str] = Field(default=None, min_length=1, description="Underlying symbol (for single snapshot)")
+    earnings_date: Optional[date] = Field(default=None, description="Earnings date to snapshot all symbols (for batch snapshot)")
+    earnings_time_filter: Optional[str] = Field(
+        default=None,
+        pattern="^(PRE_MARKET|AFTER_HOURS|UNKNOWN)$",
+        description="Filter symbols by earnings time (only used with earnings_date)"
+    )
     snapshot_date: date = Field(..., description="Date to capture snapshot")
     min_dte: int = Field(7, ge=0, description="Minimum days to expiration")
     max_dte: int = Field(365, ge=0, description="Maximum days to expiration")
     pipeline_name: str = Field(..., min_length=1, description="DLT pipeline name")
-    dataset_name: str = Field("options", description="Dataset name")
+    dataset_name: str = Field("option_chains", description="Dataset name")
+    earnings_dataset_name: str = Field("earnings", description="Dataset name for earnings data")
+    database_path: Path = Field(default=Path("data"), description="Path to data directory")
     cache_path: Path = Field(default=Path(".dlt-ibapi/cache"), description="Contract cache path")
+
+    @field_validator('underlying')
+    @classmethod
+    def validate_underlying(cls, v: Optional[str]) -> Optional[str]:
+        """Ensure underlying is uppercase if provided."""
+        return v.upper().strip() if v else None
 
     @field_validator('max_dte')
     @classmethod
@@ -153,11 +174,14 @@ class SnapshotParams(BaseModel):
             raise ValueError('max_dte must be greater than or equal to min_dte')
         return v
 
-    @field_validator('underlying')
-    @classmethod
-    def validate_underlying(cls, v: str) -> str:
-        """Ensure underlying is uppercase."""
-        return v.upper().strip()
+    def model_post_init(self, __context):
+        """Validate that exactly one of underlying or earnings_date is provided."""
+        if self.underlying and self.earnings_date:
+            raise ValueError('Cannot specify both underlying and earnings_date. Use one or the other.')
+        if not self.underlying and not self.earnings_date:
+            raise ValueError('Must specify either underlying or earnings_date')
+        if self.earnings_time_filter and not self.earnings_date:
+            raise ValueError('earnings_time_filter can only be used with earnings_date')
 
 
 class SnapshotResult(BaseModel):
@@ -173,6 +197,24 @@ class SnapshotResult(BaseModel):
     warnings: List[str] = Field(default_factory=list, description="Warning messages")
 
 
+class BatchSnapshotResult(BaseModel):
+    """Result of batch snapshot operation for earnings date.
+
+    Aggregates results from multiple symbol snapshots.
+    """
+    success: bool = Field(..., description="Whether batch operation succeeded (all or partial success)")
+    earnings_date: date = Field(..., description="Earnings date that was queried")
+    snapshot_date: date = Field(..., description="Date snapshots were taken")
+    total_symbols: int = Field(..., ge=0, description="Total symbols found with earnings")
+    successful_snapshots: int = Field(default=0, ge=0, description="Number of successful snapshots")
+    failed_snapshots: int = Field(default=0, ge=0, description="Number of failed snapshots")
+    failed_symbols: List[str] = Field(default_factory=list, description="Symbols that failed to snapshot")
+    pipeline_name: str = Field(..., description="DLT pipeline name used")
+    duration_seconds: float = Field(..., ge=0, description="Total duration of batch operation")
+    warnings: List[str] = Field(default_factory=list, description="Warning messages from all snapshots")
+    individual_results: List[SnapshotResult] = Field(default_factory=list, description="Results for each symbol")
+
+
 # List Snapshots Models
 
 class ListSnapshotsParams(BaseModel):
@@ -181,7 +223,7 @@ class ListSnapshotsParams(BaseModel):
 
     underlying: Optional[str] = Field(default=None, description="Filter by underlying symbol")
     database_path: Path = Field(default=Path("data"), description="Path to data directory")
-    dataset_name: str = Field("options", description="Dataset name")
+    dataset_name: str = Field("option_chains", description="Dataset name")
     start_date: Optional[date] = Field(default=None, description="Filter by start date")
     end_date: Optional[date] = Field(default=None, description="Filter by end date")
 
@@ -254,3 +296,57 @@ class StatsResult(BaseModel):
     total_tables: int = Field(default=0, ge=0, description="Total tables found")
     duration_seconds: float = Field(..., ge=0, description="Duration of operation")
     error: Optional[str] = Field(default=None, description="Error message if failed")
+
+
+# Resolve Contracts Models
+
+class ResolveContractsParams(BaseModel):
+    """Parameters for resolve-contracts operation."""
+    model_config = ConfigDict(frozen=True)
+
+    symbols: Optional[List[str]] = Field(default=None, description="Explicit list of symbols to resolve")
+    earnings_date: Optional[date] = Field(default=None, description="Load symbols from earnings on this date")
+    earnings_file: Optional[Path] = Field(default=None, description="Load symbols from earnings JSON file")
+    database_path: Path = Field(default=Path("data"), description="Path to data directory")
+    cache_path: Path = Field(default=Path(".dlt-ibapi/cache"), description="Path to contract cache")
+    exchange: str = Field(default="SMART", description="Exchange for contract resolution")
+    currency: str = Field(default="USD", description="Currency for contract resolution")
+    sec_type: str = Field(default="STK", description="Security type")
+    timeout: float = Field(default=10.0, gt=0, description="Timeout per symbol in seconds")
+
+    @field_validator('symbols')
+    @classmethod
+    def validate_symbols(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Ensure symbols are uppercase and non-empty."""
+        if v is None:
+            return None
+        return [s.upper().strip() for s in v if s.strip()]
+
+    @field_validator('earnings_file')
+    @classmethod
+    def validate_earnings_file_exists(cls, v: Optional[Path]) -> Optional[Path]:
+        """Ensure earnings file exists if provided."""
+        if v is not None and not v.exists():
+            raise ValueError(f'Earnings file does not exist: {v}')
+        return v
+
+
+class ContractResolutionInfo(BaseModel):
+    """Information about a single resolved contract."""
+    symbol: str = Field(..., description="Stock symbol")
+    conid: int = Field(..., description="IB contract ID")
+    exchange: str = Field(..., description="Primary exchange")
+    currency: str = Field(..., description="Currency")
+    long_name: Optional[str] = Field(default=None, description="Company name")
+
+
+class ResolveContractsResult(BaseModel):
+    """Result of resolve-contracts operation."""
+    success: bool = Field(..., description="Whether operation succeeded")
+    total_requested: int = Field(..., ge=0, description="Total symbols requested")
+    resolved: List[ContractResolutionInfo] = Field(default_factory=list, description="Successfully resolved contracts")
+    failed: Dict[str, str] = Field(default_factory=dict, description="Failed symbols with error messages")
+    skipped: List[str] = Field(default_factory=list, description="Symbols skipped (already in cache)")
+    cache_path: Path = Field(..., description="Path to contract cache")
+    duration_seconds: float = Field(..., ge=0, description="Duration of operation")
+    error: Optional[str] = Field(default=None, description="Overall error message if failed")

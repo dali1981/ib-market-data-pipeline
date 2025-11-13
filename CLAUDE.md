@@ -55,6 +55,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 └─────────────────────────────────────────┘
 ```
 
+### Dataset Organization
+
+`dlt-ibapi` organizes data into four primary datasets:
+
+| Dataset | Purpose | CLI Commands | Location |
+|---------|---------|--------------|----------|
+| `stocks` | Equity bars (underlying spot prices) | `backfill-equity` | `./data/stocks/` |
+| `options` | Option bars (OHLCV for specific contracts) | `backfill-options` | `./data/options/` |
+| `option_chains` | Option chain snapshots (contract metadata) | `snapshot`, `list-snapshots` | `./data/option_chains/` |
+| `earnings` | Earnings calendar (announcement dates/times) | `load-earnings`, `list-earnings` | `./data/earnings/` |
+
+**Key Concepts:**
+- **Dataset**: Logical grouping of related tables (e.g., all equity data → `stocks`)
+- **Pipeline**: DLT execution instance with unique name (e.g., `ib_snapshots`)
+- **Directory structure**: `./data/{dataset}/{table}/*.parquet`
+
+**Data Separation:**
+- **stocks**: Spot prices for underlying equities (backtesting reference prices)
+- **options**: Pricing data (OHLCV) for specific option contracts
+- **option_chains**: Metadata about available contracts (strikes, expirations, DTE) - NOT prices
+- **earnings**: Calendar data (announcement dates, times, forecasts) for strategy timing
+
+**Example Workflow:**
+```bash
+# 1. Load earnings calendar
+dlt-ibapi load-earnings earnings.json
+
+# 2. Capture option chain snapshot
+dlt-ibapi snapshot AAPL --min-dte 7 --max-dte 60
+
+# 3. Backfill option bars
+dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
+
+# 4. Backfill equity bars
+dlt-ibapi backfill-equity AAPL --bar-size "1 day"
+
+# 5. Verify data
+dlt-ibapi stats ./data --dataset stocks
+dlt-ibapi stats ./data --dataset options
+dlt-ibapi stats ./data --dataset option_chains
+dlt-ibapi stats ./data --dataset earnings
+```
+
 ### CLI Architecture (New - Modular Pattern)
 
 **As of 2025-11-07**, the CLI has been refactored into a modular architecture inspired by crypto_options:
@@ -118,6 +161,13 @@ def execute_backfill_equity(
 - Query API for reading Parquet data
 - `ParquetReaderBase`: Base class for Parquet readers (uses DuckDB + PyArrow)
 - Reader classes: EquityBarsReader, OptionBarsReader, etc.
+
+**Contract Resolution** (`resolution/`):
+- `ContractResolver`: Resolves symbols to IB Contract objects with caching
+- `ContractCache`: Parquet-based cache for resolved contracts (`.dlt-ibapi/cache/contracts/`)
+- Workflow: Check cache → Call ContractDetails API → Save to cache
+- **Critical**: Must resolve symbols to contracts before calling IB API functions
+- Use `dlt-ibapi resolve-contracts` CLI command to pre-populate cache
 
 **Configuration**:
 - Pydantic models for type safety (`config.py`)
@@ -214,8 +264,20 @@ uv run dlt-ibapi snapshot AAPL --min-dte 7 --max-dte 60
 # Backfill option bars
 uv run dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
 
+# Load earnings calendar
+uv run dlt-ibapi load-earnings /path/to/earnings.json --start-date 2025-11-01
+
+# List upcoming earnings
+uv run dlt-ibapi list-earnings --days-ahead 30 --symbols AAPL MSFT
+
+# Resolve contracts (pre-populate cache)
+uv run dlt-ibapi resolve-contracts AAPL MSFT GOOGL
+uv run dlt-ibapi resolve-contracts --earnings-date 2025-11-13
+uv run dlt-ibapi resolve-contracts --earnings-file earnings.json
+
 # Database statistics
 uv run dlt-ibapi stats ./data --dataset stocks
+uv run dlt-ibapi stats ./data --dataset earnings
 ```
 
 ## Key Design Principles
@@ -226,6 +288,7 @@ uv run dlt-ibapi stats ./data --dataset stocks
 4. **Type Safety**: Pydantic models for configuration and data validation
 5. **Reader/Writer Split**: Resources write data, Repositories read data (different APIs)
 6. **Parquet Standard**: Use Hive-style partitioning (date/symbol) for optimal queries
+7. **Contract Resolution First**: Resolve symbols to IB Contract objects before API calls (use `resolve-contracts` command)
 
 ## Important Code Patterns
 
@@ -311,6 +374,91 @@ selected = filter_contracts_by_selection_mode(
 )
 ```
 
+### Loading Earnings Data
+
+```python
+import dlt
+from datetime import date
+from dlt_ibapi import load_earnings_from_json
+
+# Create pipeline
+pipeline = dlt.pipeline(
+    pipeline_name="earnings_loader",
+    destination=dlt.destinations.filesystem(bucket_url="./data"),
+    dataset_name="earnings",
+)
+
+# Load earnings from Nasdaq JSON file
+data = load_earnings_from_json(
+    json_file="/path/to/earnings.json",
+    start_date=date(2025, 11, 1),
+    end_date=date(2025, 12, 31),
+    symbols=["AAPL", "MSFT", "GOOGL"],  # Optional filter
+)
+
+# Run pipeline (write_disposition="replace" replaces existing data)
+info = pipeline.run(data, write_disposition="replace", loader_file_format="parquet")
+print(f"Loaded {info.metrics.get('rows', 0)} earnings events")
+```
+
+**Alternative: Snapshot Loading** (for historical tracking):
+```python
+from dlt_ibapi import load_earnings_snapshot
+
+# Load with snapshot date tracking
+snapshot_data = load_earnings_snapshot(
+    json_file="/path/to/earnings_2025-11-13.json",
+    snapshot_date=date(2025, 11, 13),  # When snapshot was captured
+    start_date=date(2025, 11, 13),
+    end_date=date(2026, 2, 28),
+)
+
+# Append mode preserves historical snapshots
+info = pipeline.run(snapshot_data, write_disposition="append", loader_file_format="parquet")
+```
+
+**Primary Key Difference**:
+- `load_earnings_from_json`: `[symbol, earnings_date]` (current earnings)
+- `load_earnings_snapshot`: `[symbol, earnings_date, snapshot_date]` (historical tracking)
+
+### Querying Earnings Data
+
+```python
+from dlt_ibapi.repositories import EarningsCalendarReader
+from datetime import date
+
+# Initialize reader
+reader = EarningsCalendarReader(database_path="./data", dataset_name="earnings")
+
+# Get upcoming earnings (next 30 days)
+upcoming = reader.get_upcoming_earnings(
+    days_ahead=30,
+    from_date=date.today(),
+    symbols=["AAPL", "MSFT"],      # Optional filter
+    earnings_time="AFTER_HOURS"     # Optional: "PRE_MARKET", "AFTER_HOURS", or None
+)
+print(upcoming[['symbol', 'earnings_date', 'earnings_time', 'company_name']])
+
+# Get all earnings for a symbol
+aapl_earnings = reader.get_earnings_for_symbol(
+    symbol="AAPL",
+    start_date=date(2025, 1, 1),
+    end_date=date(2025, 12, 31)
+)
+
+# Check if earnings on specific date
+earnings_today = reader.get_earnings_on_date(date.today())
+has_earnings = not earnings_today.empty
+
+# Get available symbols with earnings data
+symbols = reader.get_available_symbols()
+print(f"Earnings data for {len(symbols)} symbols")
+
+# Get date range of available data
+min_date, max_date = reader.get_date_range()
+print(f"Earnings data from {min_date} to {max_date}")
+```
+
 ## Configuration System
 
 **Hierarchy** (highest to lowest priority):
@@ -382,15 +530,78 @@ def test_gap_detection_with_business_days():
 
 **Separation**: Library (dlt-ibapi) handles data ingestion, Orchestrator (Dagster) handles scheduling/monitoring
 
+## Contract Resolution Workflow
+
+**Critical**: IB API functions require valid `Contract` objects, not just symbol strings. The proper workflow is:
+
+1. **Resolve symbol to contract** (ContractDetails API call)
+2. **Cache contract for reuse** (Parquet storage in `.dlt-ibapi/cache/contracts/`)
+3. **Use contract in API calls** (historical data, option chains, etc.)
+
+### Manual Pre-Population (Recommended)
+
+Use the `resolve-contracts` CLI command to pre-populate the cache before expensive operations:
+
+```bash
+# Before running snapshot/backfill, resolve contracts first
+dlt-ibapi resolve-contracts --earnings-date 2025-11-13
+
+# This will:
+# - Load symbols from earnings calendar
+# - Check cache for existing contracts
+# - Call ContractDetails API for new symbols
+# - Handle failures gracefully (log and continue)
+# - Save results to .dlt-ibapi/cache/contracts/
+
+# Then run snapshot (uses cached contracts, no API overhead)
+dlt-ibapi snapshot --earnings-date 2025-11-13 --min-dte 7 --max-dte 60
+```
+
+### Automatic Resolution (Fallback)
+
+If not pre-populated, DLT resources will resolve contracts on-demand during execution. However:
+- **Slower**: API call + cache write during data pipeline
+- **Less robust**: Errors may interrupt pipeline
+- **Not recommended** for batch operations
+
+### Cache Location
+
+Contracts are stored in Parquet format at `.dlt-ibapi/cache/contracts/` with structure:
+```
+.dlt-ibapi/cache/contracts/
+  sec_type=STK/
+    snapshot=2025-11-13/
+      *.parquet
+```
+
+### Handling Invalid Symbols
+
+Some symbols from earnings data may not exist in IB (delisted, wrong exchange, futures, etc.):
+- `resolve-contracts` handles these gracefully: logs error and continues
+- Failed symbols are reported in output table
+- Cached contracts are used for valid symbols
+- Invalid symbols are skipped in subsequent operations
+
 ## Common Gotchas
 
-1. **Parquet Partitioning**: Always use `hive_partitioning=true` in DuckDB queries
+1. **Contract Resolution Required**: Never pass raw symbol strings to IB API - always resolve to Contract objects first
+   ```python
+   # WRONG - will fail
+   bars = fetch_historical_bars("AAPL", ...)
+
+   # RIGHT - resolve first
+   contract_info = resolver.resolve_symbol("AAPL")
+   contract = make_stock("AAPL", exch=contract_info["exchange"], ...)
+   bars = fetch_historical_bars(contract, ...)
+   ```
+
+2. **Parquet Partitioning**: Always use `hive_partitioning=true` in DuckDB queries
    ```sql
    SELECT * FROM parquet_scan('./data/stocks/**/*.parquet', hive_partitioning=true)
    WHERE symbol = 'AAPL'  -- Partition pruning works!
    ```
 
-2. **PyArrow Date Filters**: Use `pa.scalar()` for date comparisons
+3. **PyArrow Date Filters**: Use `pa.scalar()` for date comparisons
    ```python
    filters = [
        ("date", ">=", pa.scalar(start_date, type=pa.date32())),
@@ -398,26 +609,28 @@ def test_gap_detection_with_business_days():
    ]
    ```
 
-3. **Gap Detection Business Days**: Use `pandas_market_calendars` to respect market hours
+4. **Gap Detection Business Days**: Use `pandas_market_calendars` to respect market hours
    ```python
    from dlt_ibapi.backfill.market_calendar import get_valid_trading_days
    business_days = get_valid_trading_days(start_date, end_date, bar_size)
    ```
 
-4. **DLT Write Dispositions**:
+5. **DLT Write Dispositions**:
    - `replace`: Snapshots (option chains)
    - `append`: Backfills with deduplication via primary keys
    - `merge`: Not typically used (DLT handles dedup automatically)
 
-5. **Contract Cache**: First run will be slower (needs to resolve contracts and cache)
-   - Cache location: `.dlt-ibapi/cache/`
-   - Subsequent runs use cached contract IDs
+6. **Pre-populate Contract Cache**: Use `resolve-contracts` before batch operations
+   - Avoids "No security definition" errors during pipelines
+   - Handles invalid symbols gracefully
+   - Cache location: `.dlt-ibapi/cache/contracts/`
 
 ## File Locations
 
 **Core Source Files**:
 - `src/dlt_ibapi/sources.py` - Basic DLT resources (historical bars, contract details)
 - `src/dlt_ibapi/backfill/resources.py` - Backfill DLT resources with gap detection
+- `src/dlt_ibapi/earnings.py` - Earnings calendar DLT resources (load from JSON)
 - `src/dlt_ibapi/transformers.py` - Data normalization functions
 - `src/dlt_ibapi/cli_app.py` - CLI entry point (Typer commands)
 - `src/dlt_ibapi/cli/` - CLI business logic package (models, execution functions)
@@ -432,16 +645,24 @@ def test_gap_detection_with_business_days():
 - `src/dlt_ibapi/backfill/contract_selection.py` - Option contract selection strategies
 - `src/dlt_ibapi/backfill/market_calendar.py` - Business day calculations
 
+**Contract Resolution**:
+- `src/dlt_ibapi/resolution/resolver.py` - ContractResolver (symbol → IB Contract)
+- `src/dlt_ibapi/resolution/contract_cache.py` - ContractCache (Parquet storage)
+- `src/dlt_ibapi/cli/resolve.py` - CLI business logic for resolve-contracts command
+
 **Repositories (Read API)**:
 - `src/dlt_ibapi/repositories/base.py` - Base reader classes
 - `src/dlt_ibapi/repositories/parquet_reader.py` - ParquetReaderBase (DuckDB + PyArrow)
 - `src/dlt_ibapi/repositories/equity_bars.py` - EquityBarsReader
 - `src/dlt_ibapi/repositories/option_bars.py` - OptionBarsReader
 - `src/dlt_ibapi/repositories/option_chain.py` - OptionChainSnapshotReader
+- `src/dlt_ibapi/repositories/earnings_calendar.py` - EarningsCalendarReader
+- `src/dlt_ibapi/repositories/dataset_stats.py` - DatasetStatsReader (generic stats)
 
 **Documentation**:
 - `README.md` - User-facing documentation
 - `docs/BACKFILL_GUIDE.md` - Complete backfill guide
+- `docs/EARNINGS_GUIDE.md` - Earnings calendar loading and querying guide
 - `docs/API_REFERENCE.md` - API documentation
 - `ARCHITECTURE_CLARIFICATION.md` - DLT vs Dagster separation
 - `PARQUET_MIGRATION_COMPLETE.md` - Parquet migration notes

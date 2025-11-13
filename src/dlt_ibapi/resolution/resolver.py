@@ -128,9 +128,8 @@ class ContractResolver:
 
         Workflow:
         1. Check cache if use_cache=True
-        2. Search with MatchingSymbols if not cached
-        3. Get full details with ContractDetails
-        4. Save to cache if save_to_cache=True
+        2. Get full details with ContractDetails
+        3. Save to cache if save_to_cache=True
 
         Args:
             symbol: Stock symbol (e.g., "AAPL")
@@ -143,6 +142,9 @@ class ContractResolver:
 
         Returns:
             Contract details dict or None if not found
+
+        Raises:
+            Exception: If API call fails or contract not found
         """
         symbol = symbol.upper()
 
@@ -160,29 +162,34 @@ class ContractResolver:
                 return cached.iloc[0].to_dict()
 
         # Not in cache, need to resolve via API
-        # Step 1: Create contract and get details directly
-        # (We skip MatchingSymbols for now since most equity symbols resolve directly)
+        # Create contract and get details
         from ib_connector import make_stock
 
         contract = make_stock(symbol, exch=exchange, curr=currency) if sec_type == "STK" else None
         if not contract:
-            return None
+            raise ValueError(f"Cannot create contract for {symbol} (unsupported sec_type: {sec_type})")
 
-        # Step 2: Get contract details
-        details_list = self.get_contract_details(contract, timeout=timeout)
+        # Get contract details (this will raise exception if error)
+        try:
+            details_list = self.get_contract_details(contract, timeout=timeout)
+        except Exception as e:
+            raise Exception(f"Failed to get contract details for {symbol}: {str(e)}")
 
         if not details_list:
-            return None
+            raise ValueError(f"No security definition found for {symbol} on {exchange}")
 
         # Convert to DataFrame for caching
         df = self._contract_details_to_df(details_list, symbol)
 
+        if df.empty:
+            raise ValueError(f"Failed to parse contract details for {symbol}")
+
         # Save to cache
-        if save_to_cache and not df.empty:
+        if save_to_cache:
             self.cache.save(df)
 
         # Return first result
-        return df.iloc[0].to_dict() if not df.empty else None
+        return df.iloc[0].to_dict()
 
     def resolve_symbols_batch(
         self,
