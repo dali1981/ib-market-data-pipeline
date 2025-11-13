@@ -1024,16 +1024,118 @@ def backtest_earnings_spreads(
         console.print(table)
         console.print()
 
-        # TODO: Implement full backtest execution
-        # For now, show that configuration is working
+        # Run backtest
+        console.print("[bold]Running backtest...[/bold]")
 
-        console.print("[yellow]⚠️  Note:[/yellow] Full backtest execution coming soon!")
-        console.print("Next steps:")
-        console.print("1. Implement backtest engine integration")
-        console.print("2. Add results export (equity curve, trades, metrics)")
-        console.print("3. Add performance visualization")
+        from dlt_ibapi.backtest import (
+            OptionsBacktestRunner,
+            OptionsChainProvider,
+        )
 
-        console.print("\n[green]✓ Configuration validated successfully[/green]")
+        # Initialize option chain provider
+        chain_provider = OptionsChainProvider(data_provider.option_chain_reader)
+
+        # Create backtest runner
+        runner = OptionsBacktestRunner(
+            strategy=strat,
+            data_provider=data_provider,
+            option_chain_provider=chain_provider,
+            initial_capital=initial_capital,
+            commission_per_contract=0.65,
+        )
+
+        # Run backtest
+        result = runner.run(
+            start_date=start.date(),
+            end_date=end.date(),
+        )
+
+        # Display results
+        console.print("\n[bold cyan]📈 Backtest Results[/bold cyan]\n")
+
+        results_table = Table(title="Performance Summary")
+        results_table.add_column("Metric", style="cyan")
+        results_table.add_column("Value", style="green")
+
+        summary = result.to_dict()
+        results_table.add_row("Initial Capital", f"${summary['initial_capital']:,.0f}")
+        results_table.add_row("Final Value", f"${summary['final_value']:,.0f}")
+        results_table.add_row("Total Return", f"${summary['total_return']:,.2f}")
+        results_table.add_row("Total Return %", f"{summary['total_return_pct']:.2f}%")
+        results_table.add_row("", "")
+        results_table.add_row("Number of Trades", str(summary['num_trades']))
+        results_table.add_row("Winning Trades", str(summary['winning_trades']))
+        results_table.add_row("Losing Trades", str(summary['losing_trades']))
+        results_table.add_row("Win Rate", f"{summary['win_rate']:.1f}%")
+        results_table.add_row("", "")
+        results_table.add_row("Average Win", f"${summary['avg_win']:,.2f}")
+        results_table.add_row("Average Loss", f"${summary['avg_loss']:,.2f}")
+        results_table.add_row("Profit Factor", f"{summary['profit_factor']:.2f}")
+        results_table.add_row("", "")
+        results_table.add_row("Max Drawdown", f"${summary['max_drawdown']:,.2f}")
+        results_table.add_row("Max Drawdown %", f"{summary['max_drawdown_pct']:.2f}%")
+
+        console.print(results_table)
+
+        # Export results
+        console.print(f"\n[bold]Exporting results to {output_dir}...[/bold]")
+
+        from pathlib import Path
+        import json
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # Export summary as JSON
+        summary_file = output_path / f"summary_{strategy}_{start.date()}_{end.date()}.json"
+        with open(summary_file, 'w') as f:
+            json.dump(summary, f, indent=2)
+        console.print(f"  [green]✓[/green] Summary: {summary_file}")
+
+        # Export equity curve as CSV
+        equity_file = output_path / f"equity_curve_{strategy}_{start.date()}_{end.date()}.csv"
+        result.equity_curve.write_csv(equity_file)
+        console.print(f"  [green]✓[/green] Equity curve: {equity_file}")
+
+        # Export trades as CSV
+        if result.trades:
+            import polars as pl
+            trades_df = pl.DataFrame(result.trades)
+            trades_file = output_path / f"trades_{strategy}_{start.date()}_{end.date()}.csv"
+            trades_df.write_csv(trades_file)
+            console.print(f"  [green]✓[/green] Trades: {trades_file}")
+
+        # Create equity curve plot
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # Non-interactive backend
+            import matplotlib.pyplot as plt
+
+            plt.figure(figsize=(12, 6))
+            timestamps = result.equity_curve['timestamp'].to_list()
+            values = result.equity_curve['portfolio_value'].to_list()
+
+            plt.plot(timestamps, values, linewidth=2, color='#2E86AB')
+            plt.axhline(y=initial_capital, color='gray', linestyle='--', alpha=0.5, label='Initial Capital')
+            plt.title(f'{strategy.replace("_", " ").title()} - Equity Curve', fontsize=14, fontweight='bold')
+            plt.xlabel('Date', fontsize=12)
+            plt.ylabel('Portfolio Value ($)', fontsize=12)
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+            plt.tight_layout()
+
+            plot_file = output_path / f"equity_curve_{strategy}_{start.date()}_{end.date()}.png"
+            plt.savefig(plot_file, dpi=300, bbox_inches='tight')
+            plt.close()
+
+            console.print(f"  [green]✓[/green] Equity curve plot: {plot_file}")
+
+        except ImportError:
+            console.print("  [yellow]⚠[/yellow]  Skipping plot (matplotlib not installed)")
+        except Exception as e:
+            console.print(f"  [yellow]⚠[/yellow]  Plot generation failed: {e}")
+
+        console.print(f"\n[green]✓ Backtest complete! Results saved to {output_dir}[/green]")
 
     except Exception as e:
         console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
