@@ -6,14 +6,17 @@ Adapts dlt-ibapi repositories (Parquet readers) to the tools/ backtest framework
 Key adapters:
 - IBBacktestDataProvider: Provides market data (equity + options)
 - EarningsCalendarProvider: Provides earnings calendar data
-- OptionsChainProvider: Provides option chain snapshots
+
+NOTE: OptionsChainProvider has been DEPRECATED. The IB API does not provide
+historical option chain snapshots. Use OptionBarsReader directly for option pricing.
 """
 
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta, date
 from decimal import Decimal
+from dataclasses import dataclass
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -28,6 +31,56 @@ from dlt_ibapi.repositories import (
 from tools.options.models import Greeks
 from tools.options.pricing import GreeksCalculator
 from tools.options.spreads import OptionChain, OptionContract
+
+
+@dataclass
+class BacktestDataRequirements:
+    """
+    Configuration for backtest data requirements and validation thresholds.
+
+    Used by BacktestDataValidator to determine minimum acceptable data coverage.
+    """
+
+    # Equity bars
+    equity_bar_size: str = "1 day"
+    equity_lookback_days: int = 60  # Need history before earnings for signals
+
+    # Option contract selection
+    front_month_dte: Tuple[int, int] = (14, 21)  # DTE range for front month
+    back_month_dte: Tuple[int, int] = (35, 50)   # DTE range for back month
+    dte_tolerance: int = 7  # Allow ±7 days when finding expiries
+    atm_strike_range: int = 5  # Need ±5 strikes around ATM
+
+    # Option bars
+    option_bar_size: str = "1 day"
+    entry_window_days: int = 7  # Hold spread for 7 days
+
+    # Coverage thresholds
+    min_equity_coverage: float = 0.90  # 90% of days must have equity data
+    min_option_bars_coverage: float = 0.95  # 95% of option bars must exist
+
+    # Execution
+    exchange: str = "NYSE"  # Used for trading day calculations
+
+    def validate(self) -> None:
+        """Validate configuration is sensible."""
+        if self.front_month_dte[0] >= self.back_month_dte[0]:
+            raise ValueError(
+                f"front_month_dte[0] ({self.front_month_dte[0]}) must be < "
+                f"back_month_dte[0] ({self.back_month_dte[0]})"
+            )
+
+        if self.front_month_dte[1] >= self.back_month_dte[1]:
+            raise ValueError(
+                f"front_month_dte[1] ({self.front_month_dte[1]}) must be < "
+                f"back_month_dte[1] ({self.back_month_dte[1]})"
+            )
+
+        if not (0.0 < self.min_equity_coverage <= 1.0):
+            raise ValueError("min_equity_coverage must be between 0 and 1")
+
+        if not (0.0 < self.min_option_bars_coverage <= 1.0):
+            raise ValueError("min_option_bars_coverage must be between 0 and 1")
 
 
 class IBBacktestDataProvider:
@@ -327,13 +380,22 @@ class EarningsCalendarProvider:
 
 class OptionsChainProvider:
     """
-    Adapter: OptionChainSnapshotReader → tools/ OptionChain interface.
+    DEPRECATED: This class is non-functional due to IB API limitations.
 
-    Provides option chain snapshots for strategy analysis.
+    The IB API does NOT provide historical option chain snapshots. It only provides
+    current option chain parameters (expirations and strikes), WITHOUT pricing data
+    (bid/ask/volume/open interest).
 
-    Example:
-        >>> provider = OptionsChainProvider(chain_reader)
-        >>> chain = provider.get_chain("AAPL", datetime.now())
+    For backtesting, you MUST use OptionBarsReader directly to get historical option
+    prices for specific contracts.
+
+    This class is kept for backward compatibility but will raise NotImplementedError.
+
+    See: https://interactivebrokers.github.io/tws-api/historical_limitations.html
+
+    Alternative:
+        Use IBBacktestDataProvider.option_bars_reader.get_bars() to get historical
+        option OHLCV for specific contracts selected via deterministic rules.
     """
 
     def __init__(self, option_chain_reader: OptionChainSnapshotReader):
@@ -342,68 +404,62 @@ class OptionsChainProvider:
 
         Args:
             option_chain_reader: Option chain snapshot reader
+
+        Warning:
+            This provider is DEPRECATED and non-functional.
         """
         self.reader = option_chain_reader
+        import warnings
+        warnings.warn(
+            "OptionsChainProvider is deprecated and non-functional. "
+            "IB API does not provide historical option chain snapshots. "
+            "Use OptionBarsReader directly for historical option prices.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     def get_chain(self, symbol: str, timestamp: datetime) -> Optional[OptionChain]:
         """
-        Get option chain for symbol at timestamp.
+        DEPRECATED: This method is non-functional.
 
         Args:
             symbol: Underlying symbol
             timestamp: Timestamp
 
-        Returns:
-            OptionChain or None if not available
+        Raises:
+            NotImplementedError: Always raises - IB API does not provide historical chains
+
+        Note:
+            Option chain snapshots collected via dlt-ibapi contain ONLY metadata
+            (expirations and strikes), NOT pricing data (bid/ask/volume/OI).
+
+            For backtesting, use OptionBarsReader.get_bars() to get historical
+            option OHLCV for specific contracts:
+
+            Example:
+                >>> from dlt_ibapi.repositories import OptionBarsReader
+                >>> reader = OptionBarsReader("./data", "options")
+                >>> bars = reader.get_bars(
+                ...     underlying="AAPL",
+                ...     expiry=date(2025, 1, 17),
+                ...     strike=150.0,
+                ...     right="C",
+                ...     bar_size="1 day",
+                ...     start_date=date(2024, 12, 1),
+                ...     end_date=date(2024, 12, 31),
+                ... )
         """
-        try:
-            # Get chain snapshot
-            chain_df = self.reader.get_chain(
-                underlying=symbol,
-                snapshot_date=timestamp.date(),
-            )
-
-            if chain_df.empty:
-                return None
-
-            # Convert to OptionContract objects
-            contracts = []
-
-            for _, row in chain_df.iterrows():
-                # Parse expiry
-                expiry = row["expiry"]
-                if isinstance(expiry, str):
-                    expiry = datetime.fromisoformat(expiry)
-
-                # Create instrument identifier
-                exp_str = expiry.strftime("%y%m%d")
-                instrument = f"{symbol}-{exp_str}-{row['strike']}-{row['right']}"
-
-                contract = OptionContract(
-                    instrument=instrument,
-                    underlying=symbol,
-                    expiry=expiry,
-                    strike=float(row["strike"]),
-                    right=row["right"],
-                    bid=float(row.get("bid", 0.0)),
-                    ask=float(row.get("ask", 0.0)),
-                    mid=(float(row.get("bid", 0.0)) + float(row.get("ask", 0.0))) / 2.0,
-                    volume=int(row.get("volume", 0)),
-                    open_interest=int(row.get("open_interest", 0)),
-                    last=float(row.get("last", 0.0)) if row.get("last") else None,
-                )
-
-                contracts.append(contract)
-
-            # Create OptionChain
-            chain = OptionChain(
-                underlying=symbol,
-                timestamp=timestamp,
-                contracts=contracts,
-                spot_price=None,  # Will be populated separately
-            )
-
-            return chain
-
-        except Exception:
-            return None
+        raise NotImplementedError(
+            f"OptionsChainProvider.get_chain() is deprecated and non-functional.\n"
+            f"\n"
+            f"The IB API does NOT provide historical option chain snapshots.\n"
+            f"Option chain snapshots only contain metadata (expirations, strikes),\n"
+            f"NOT pricing data (bid/ask/volume/open interest).\n"
+            f"\n"
+            f"For backtesting:\n"
+            f"1. Use deterministic option selection rules (ATM strike, DTE range)\n"
+            f"2. Use OptionBarsReader.get_bars() to get historical option OHLCV\n"
+            f"3. Select options based on available bar data\n"
+            f"\n"
+            f"See: docs/BACKTEST_QUICKSTART.md for details"
+        )
