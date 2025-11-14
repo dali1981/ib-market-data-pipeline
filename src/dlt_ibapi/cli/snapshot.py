@@ -5,11 +5,12 @@ Uses Pydantic models for type safety and dependency injection for I/O.
 """
 
 import time
-import logging
 from typing import Optional, Callable, Any
 from pathlib import Path
 
 import dlt
+from delta_lake_storage import get_config as get_storage_config, StorageBackend
+from delta_lake_storage.dlt import create_pipeline, run_pipeline
 
 from dlt_ibapi.cli.models import (
     SnapshotParams,
@@ -23,8 +24,51 @@ from dlt_ibapi.config import IBConnectionConfig
 from dlt_ibapi.config_loader import get_connection_config
 from dlt_ibapi.backfill import snapshot_option_chain
 from dlt_ibapi.repositories import OptionChainSnapshotReader, EarningsCalendarReader
+from dlt_ibapi.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+
+def _create_pipeline_with_storage(params, pipeline_factory: Optional[Callable] = None):
+    """
+    Create DLT pipeline using delta-lake-storage configuration.
+
+    Handles both test (injected factory) and production paths.
+    Automatically configures Delta Lake if params.use_delta is True.
+
+    Args:
+        params: CLI parameters with pipeline_name, dataset_name, use_delta
+        pipeline_factory: Optional test factory
+
+    Returns:
+        Configured DLT pipeline
+    """
+    if pipeline_factory:
+        logger.debug("using_injected_pipeline_factory")
+        return pipeline_factory(params)
+
+    # Production path: use delta-lake-storage
+    storage_config = get_storage_config()
+
+    # Override config with params
+    storage_config.storage.base_path = str(params.database_path)
+    if params.use_delta:
+        storage_config.storage.use_delta = True
+        storage_config.storage.backend = StorageBackend.DELTA_LAKE
+        logger.info("delta_lake_enabled", backend="delta_lake")
+
+    logger.info(
+        "creating_dlt_pipeline",
+        name=params.pipeline_name,
+        backend=storage_config.storage.backend.value,
+        use_delta=storage_config.storage.use_delta,
+    )
+
+    return create_pipeline(
+        params.pipeline_name,
+        params.dataset_name,
+        storage_config
+    )
 
 
 def execute_snapshot(
@@ -79,17 +123,9 @@ def execute_snapshot(
             logger.warning(f"Future snapshot date: {params.snapshot_date}")
 
         # Create pipeline (or use injected mock for testing)
-        if pipeline_factory:
-            logger.debug("Using injected pipeline factory")
-            pipeline = pipeline_factory(params)
-        else:
-            # Production path: create real DLT pipeline
-            logger.info(f"Creating DLT pipeline: {params.pipeline_name}")
-            pipeline = dlt.pipeline(
-                pipeline_name=params.pipeline_name,
-                destination=dlt.destinations.filesystem(bucket_url="data"),
-                dataset_name=params.dataset_name,
-            )
+        # Create pipeline with delta-lake-storage
+        pipeline = _create_pipeline_with_storage(params, pipeline_factory)
+        storage_config = get_storage_config()
 
         # Create snapshot resource
         logger.debug("Creating snapshot resource")
@@ -103,8 +139,11 @@ def execute_snapshot(
         )
 
         # Run pipeline
-        logger.info("Running pipeline")
-        info = pipeline.run(data, write_disposition="replace", loader_file_format="parquet")
+        # Use 'append' for Parquet, DLT's merge doesn't work well with filesystem
+        # For Delta Lake, merge will work properly
+        write_disp = "merge" if params.use_delta else "append"
+        logger.info(f"Running pipeline with write_disposition={write_disp}")
+        info = run_pipeline(pipeline, data, storage_config, write_disposition=write_disp)
 
         if info.has_failed_jobs:
             warnings.append("Pipeline jobs failed")
@@ -136,13 +175,13 @@ def execute_snapshot(
                 )
 
                 if not snapshot_df.empty:
-                    # Count unique expirations and strikes from first row (SMART exchange)
-                    # Each row has arrays of expirations/strikes, all exchanges have same data
+                    # DLT normalizes arrays into child tables, so use the count columns
+                    # that were written to the main table during snapshot
                     first_row = snapshot_df.iloc[0]
-                    if "expirations" in first_row and first_row["expirations"]:
-                        expirations_count = len(first_row["expirations"])
-                    if "strikes" in first_row and first_row["strikes"]:
-                        strikes_count = len(first_row["strikes"])
+                    if "expiration_count" in first_row:
+                        expirations_count = int(first_row["expiration_count"])
+                    if "strike_count" in first_row:
+                        strikes_count = int(first_row["strike_count"])
 
             except Exception as e:
                 logger.warning(f"Could not extract counts from snapshot: {e}")

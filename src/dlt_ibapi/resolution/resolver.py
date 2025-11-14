@@ -235,6 +235,104 @@ class ContractResolver:
 
         return pd.DataFrame(results) if results else pd.DataFrame()
 
+    def resolve_option_contract(
+        self,
+        symbol: str,
+        expiry: str,
+        strike: float,
+        right: str,
+        exchange: str = "SMART",
+        currency: str = "USD",
+        multiplier: str = "100",
+        use_cache: bool = True,
+        save_to_cache: bool = True,
+        timeout: float = 10.0,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Resolve an option contract to full contract details.
+
+        Workflow:
+        1. Check cache if use_cache=True
+        2. Create partial contract with make_option()
+        3. Get full details with ContractDetails API
+        4. Save to cache if save_to_cache=True
+
+        Args:
+            symbol: Underlying symbol (e.g., "AAPL")
+            expiry: Expiration date in YYYYMMDD format
+            strike: Strike price
+            right: "C" for call or "P" for put
+            exchange: Exchange (default: "SMART")
+            currency: Currency (default: "USD")
+            multiplier: Contract multiplier (default: "100")
+            use_cache: Check cache before API call
+            save_to_cache: Save results to cache
+            timeout: Request timeout
+
+        Returns:
+            Contract details dict with conId, localSymbol, tradingClass, etc.
+            Returns None if contract not found.
+
+        Raises:
+            Exception: If API call fails
+        """
+        symbol = symbol.upper()
+
+        # Check cache first
+        if use_cache:
+            cached = self.cache.get_option_contract(
+                symbol=symbol,
+                expiry=expiry,
+                strike=strike,
+                right=right,
+            )
+            if cached:
+                return cached
+
+        # Not in cache, need to resolve via API
+        from ib_connector import make_option
+
+        contract = make_option(
+            symbol=symbol,
+            last_trade_date=expiry,
+            strike=strike,
+            right=right,
+            exch=exchange,
+            curr=currency,
+            multiplier=multiplier,
+        )
+
+        # Get contract details (this will raise exception if error)
+        try:
+            details_list = self.get_contract_details(contract, timeout=timeout)
+        except Exception as e:
+            raise Exception(
+                f"Failed to get contract details for {symbol} {expiry} {strike}{right}: {str(e)}"
+            )
+
+        if not details_list:
+            raise ValueError(
+                f"No security definition found for {symbol} {expiry} {strike}{right} on {exchange}"
+            )
+
+        # Convert to DataFrame for caching
+        df = self._contract_details_to_df(details_list, symbol)
+
+        if df.empty:
+            raise ValueError(f"Failed to parse contract details for {symbol} {expiry} {strike}{right}")
+
+        # Add option-specific fields
+        df["strike"] = strike
+        df["right"] = right
+        df["last_trade_date"] = expiry
+
+        # Save to cache
+        if save_to_cache:
+            self.cache.save(df)
+
+        # Return first result
+        return df.iloc[0].to_dict()
+
     def _contract_details_to_df(
         self,
         details_list: List[ContractDetails],

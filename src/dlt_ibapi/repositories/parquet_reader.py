@@ -52,8 +52,70 @@ class ParquetReaderBase(ABC):
         self.data_root = self.database_path / dataset_name
         self.destination_type = "filesystem"
 
+        # Connection pooling: reuse connection across queries
+        self._conn: Optional[duckdb.DuckDBPyConnection] = None
+        self._delta_extension_loaded = False
+
         if not self.data_root.exists():
             raise ValueError(f"Data directory does not exist: {self.data_root}")
+
+    def _is_delta_table(self, table_path: Path) -> bool:
+        """Check if table is a Delta Lake table."""
+        return (table_path / "_delta_log").exists()
+
+    def _get_connection(self) -> duckdb.DuckDBPyConnection:
+        """
+        Get or create persistent DuckDB connection.
+
+        Connection is reused across queries to avoid overhead of creating
+        new connections and reinstalling extensions.
+
+        Returns:
+            Persistent DuckDB in-memory connection
+        """
+        if self._conn is None:
+            self._conn = duckdb.connect(":memory:")
+        return self._conn
+
+    def _ensure_delta_extension(self, conn: duckdb.DuckDBPyConnection) -> None:
+        """
+        Ensure Delta Lake extension is installed and loaded.
+
+        Only installs/loads once per connection to avoid redundant operations
+        and async channel warnings from delta-rs.
+
+        Args:
+            conn: DuckDB connection to install extension on
+        """
+        if not self._delta_extension_loaded:
+            try:
+                conn.execute("INSTALL delta")
+                conn.execute("LOAD delta")
+                self._delta_extension_loaded = True
+            except Exception:
+                # Delta extension installation failed, fall back to Parquet-only
+                pass
+
+    def close(self) -> None:
+        """
+        Close the persistent DuckDB connection.
+
+        Call this explicitly when done with the reader to free resources.
+        Also called automatically when using reader as context manager.
+        """
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+            self._delta_extension_loaded = False
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - automatically closes connection."""
+        self.close()
+        return False
 
     @abstractmethod
     def _get_table_name(self) -> str:
@@ -91,6 +153,10 @@ class ParquetReaderBase(ABC):
         """
         Execute query using DuckDB in-memory on Parquet files.
 
+        Uses a persistent connection that is reused across queries to avoid
+        overhead of creating new connections and reinstalling extensions.
+        This eliminates async channel warnings from delta-rs.
+
         Args:
             query: SQL query string
             params: Optional query parameters
@@ -100,34 +166,108 @@ class ParquetReaderBase(ABC):
         """
         import glob
 
-        conn = duckdb.connect(":memory:")
-        try:
-            # Register Parquet dataset with Hive partitioning
-            table_path = self._get_table_path()
-            table_name = self._get_table_name()
+        # Get persistent connection (created once, reused for all queries)
+        conn = self._get_connection()
 
-            # Check if any Parquet files exist
-            parquet_pattern = f"{table_path}/**/*.parquet"
-            if not glob.glob(parquet_pattern, recursive=True):
-                # No files exist - return empty DataFrame
-                # This handles the first-run case for backfill
-                return pd.DataFrame()
+        # Register dataset (Parquet or Delta Lake)
+        table_path = self._get_table_path()
+        table_name = self._get_table_name()
 
-            # Create view of Parquet files
-            conn.execute(f"""
-                CREATE VIEW {table_name} AS
-                SELECT * FROM parquet_scan('{table_path}/**/*.parquet', hive_partitioning=true)
-            """)
+        # Helper function to register a table/view
+        def register_table(name: str, path: Path):
+            """Register a table as a view if it doesn't exist."""
+            try:
+                conn.execute(f"SELECT 1 FROM {name} LIMIT 0")
+                return  # Already exists
+            except Exception:
+                pass
 
-            # Execute query
-            if params:
-                result = conn.execute(query, params).df()
+            # Check if Delta Lake table
+            if self._is_delta_table(path):
+                self._ensure_delta_extension(conn)
+                delta_ok = False
+                try:
+                    conn.execute(f"""
+                        CREATE VIEW {name} AS
+                        SELECT * FROM delta_scan('{path}')
+                    """)
+                    # Check if Delta has any data
+                    row_count = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+                    delta_ok = row_count > 0
+                except Exception:
+                    pass
+
+                if not delta_ok:
+                    # Delta empty or failed, fall back to parquet scan (exclude _delta_log)
+                    try:
+                        conn.execute(f"DROP VIEW IF EXISTS {name}")
+                    except:
+                        pass
+                    parquet_pattern = f"{path}/date=*/*.parquet"
+                    conn.execute(f"""
+                        CREATE VIEW {name} AS
+                        SELECT * FROM parquet_scan('{parquet_pattern}', hive_partitioning=true)
+                    """)
             else:
-                result = conn.execute(query).df()
+                # Check if any Parquet files exist
+                parquet_pattern = f"{path}/**/*.parquet"
+                if not glob.glob(parquet_pattern, recursive=True):
+                    return  # Skip if no files
 
-            return result
-        finally:
-            conn.close()
+                conn.execute(f"""
+                    CREATE VIEW {name} AS
+                    SELECT * FROM parquet_scan('{path}/**/*.parquet', hive_partitioning=true)
+                """)
+
+        # Register main table
+        register_table(table_name, table_path)
+
+        # Auto-detect and register DLT child tables (pattern: tablename__childname)
+        import re
+        child_table_pattern = re.compile(rf'\b({re.escape(table_name)}__\w+)\b')
+        child_tables = child_table_pattern.findall(query)
+        for child_table in set(child_tables):
+            child_path = self.database_path / self.dataset_name / child_table
+            if child_path.exists():
+                # Child tables don't have date partitions, use different pattern
+                if self._is_delta_table(child_path):
+                    # For Delta child tables, check if empty and fallback
+                    self._ensure_delta_extension(conn)
+                    delta_ok = False
+                    try:
+                        conn.execute(f"""
+                            CREATE VIEW {child_table} AS
+                            SELECT * FROM delta_scan('{child_path}')
+                        """)
+                        row_count = conn.execute(f"SELECT COUNT(*) FROM {child_table}").fetchone()[0]
+                        delta_ok = row_count > 0
+                    except Exception:
+                        pass
+
+                    if not delta_ok:
+                        try:
+                            conn.execute(f"DROP VIEW IF EXISTS {child_table}")
+                        except:
+                            pass
+                        # Child tables are flat (no partitions)
+                        conn.execute(f"""
+                            CREATE VIEW {child_table} AS
+                            SELECT * FROM parquet_scan('{child_path}/*.parquet', hive_partitioning=false)
+                        """)
+                else:
+                    # Regular parquet
+                    conn.execute(f"""
+                        CREATE VIEW {child_table} AS
+                        SELECT * FROM parquet_scan('{child_path}/*.parquet', hive_partitioning=false)
+                    """)
+
+        # Execute query
+        if params:
+            result = conn.execute(query, params).df()
+        else:
+            result = conn.execute(query).df()
+
+        return result
 
     def _query_with_pyarrow(
         self,
@@ -148,12 +288,19 @@ class ParquetReaderBase(ABC):
         """
         table_path = self._get_table_path()
 
-        # Create PyArrow dataset with Hive partitioning
-        dataset = ds.dataset(
-            table_path,
-            format="parquet",
-            partitioning="hive"
-        )
+        # Check if Delta Lake table
+        if self._is_delta_table(table_path):
+            # Use Delta Lake reader
+            from deltalake import DeltaTable
+            dt = DeltaTable(str(table_path))
+            dataset = dt.to_pyarrow_dataset()
+        else:
+            # Create PyArrow dataset with Hive partitioning
+            dataset = ds.dataset(
+                table_path,
+                format="parquet",
+                partitioning="hive"
+            )
 
         # Build scanner
         scanner_kwargs = {
@@ -214,7 +361,9 @@ class ParquetReaderBase(ABC):
         for key, value in filters.items():
             if value is not None:
                 param_name = f"filter_{key}"
-                where_clauses.append(f"{key} = ${param_name}")
+                # Quote column name if it's a SQL reserved keyword (e.g., 'right')
+                column = f'"{key}"' if key.lower() in ('right', 'left', 'order', 'group') else key
+                where_clauses.append(f"{column} = ${param_name}")
                 params[param_name] = value
 
         where_sql = " AND ".join(where_clauses)
@@ -226,8 +375,13 @@ class ParquetReaderBase(ABC):
             ORDER BY date
         """
 
-        df = self._query_with_duckdb(query, params)
-        return set(df["date"].tolist()) if not df.empty else set()
+        try:
+            df = self._query_with_duckdb(query, params)
+            return set(df["date"].tolist()) if not df.empty else set()
+        except Exception:
+            # Table doesn't exist yet (first backfill) - return empty set
+            # This is expected for initial backfills before any data exists
+            return set()
 
     def load(
         self,
@@ -310,7 +464,9 @@ class ParquetReaderBase(ABC):
         for key, value in filters.items():
             if value is not None:
                 param_name = f"filter_{key}"
-                where_clauses.append(f"{key} = ${param_name}")
+                # Quote column name if it's a SQL reserved keyword (e.g., 'right')
+                column = f'"{key}"' if key.lower() in ('right', 'left', 'order', 'group') else key
+                where_clauses.append(f"{column} = ${param_name}")
                 params[param_name] = value
 
         query = f"SELECT COUNT(*) as count FROM {table_name}"

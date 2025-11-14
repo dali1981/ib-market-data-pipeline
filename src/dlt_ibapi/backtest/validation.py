@@ -10,7 +10,6 @@ Validates data availability BEFORE starting backtest to ensure:
 Provides detailed validation reports to explain why events are skipped.
 """
 
-import logging
 from typing import List, Dict, Set, Optional, Tuple
 from datetime import date, timedelta
 from dataclasses import dataclass, field
@@ -20,12 +19,14 @@ from pathlib import Path
 from dlt_ibapi.repositories import (
     EquityBarsReader,
     OptionBarsReader,
+    OptionChainSnapshotReader,
 )
 from dlt_ibapi.backfill.gap_detection import trading_day_range
 from dlt_ibapi.backtest.earnings_loader import EarningsEvent
 from dlt_ibapi.backtest.data_providers import BacktestDataRequirements
+from dlt_ibapi.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -77,6 +78,16 @@ class BarsCoverageReport:
 
 
 @dataclass
+class SnapshotCoverageReport:
+    """Report on option chain snapshot availability for an earnings date."""
+    symbol: str
+    date: date
+    available: bool
+    expiration_count: int = 0
+    reason: Optional[str] = None
+
+
+@dataclass
 class ValidationSummary:
     """
     Summary of validation results.
@@ -115,15 +126,20 @@ class BacktestDataValidator:
     """
     Validates data availability for earnings calendar backtests.
 
-    Five-phase validation:
+    Six-phase validation:
     1. Earnings data validation
     2. Equity data coverage
-    3. Option contracts availability
-    4. Option bars coverage
-    5. Generate comprehensive report
+    3. Option chain snapshot availability (NEW)
+    4. Option contracts availability
+    5. Option bars coverage
+    6. Generate comprehensive report
 
     Example:
-        >>> validator = BacktestDataValidator(equity_reader, option_bars_reader)
+        >>> validator = BacktestDataValidator(
+        ...     equity_reader,
+        ...     option_bars_reader,
+        ...     option_chain_reader,
+        ... )
         >>> requirements = BacktestDataRequirements()
         >>> report = validator.validate_all(earnings_events, requirements)
         >>> print(f"Valid: {report.valid_events}/{report.total_events}")
@@ -133,6 +149,7 @@ class BacktestDataValidator:
         self,
         equity_reader: EquityBarsReader,
         option_bars_reader: OptionBarsReader,
+        option_chain_reader: OptionChainSnapshotReader,
     ):
         """
         Initialize validator.
@@ -140,9 +157,11 @@ class BacktestDataValidator:
         Args:
             equity_reader: Reader for equity bars
             option_bars_reader: Reader for option bars
+            option_chain_reader: Reader for option chain snapshots
         """
         self.equity_reader = equity_reader
         self.option_bars_reader = option_bars_reader
+        self.option_chain_reader = option_chain_reader
 
     def validate_all(
         self,
@@ -199,6 +218,19 @@ class BacktestDataValidator:
                 continue
 
             equity_coverages.append(equity_report.coverage)
+
+            # Phase 2.5: Option chain snapshot
+            snapshot_report = self.validate_option_chain_snapshot(
+                event=event,
+                requirements=requirements,
+            )
+
+            if not snapshot_report.available:
+                invalid_events.append(event)
+                invalid_symbols[event.symbol] = snapshot_report.reason or "No option chain snapshot"
+                reason = "missing_option_chain_snapshot"
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                continue
 
             # Phase 3: Option contracts
             option_report = self.validate_option_contracts(
@@ -368,6 +400,85 @@ class BacktestDataValidator:
                 total_expected_days=0,
                 total_actual_days=0,
                 spot_price=None,
+            )
+
+    def validate_option_chain_snapshot(
+        self,
+        event: EarningsEvent,
+        requirements: BacktestDataRequirements,
+    ) -> SnapshotCoverageReport:
+        """
+        Validate option chain snapshot exists for earnings date.
+
+        Checks if daily snapshot was captured for the earnings date.
+        Snapshot must contain available expirations.
+
+        Args:
+            event: Earnings event to validate
+            requirements: Data requirements configuration
+
+        Returns:
+            SnapshotCoverageReport with availability status and details
+        """
+        symbol = event.symbol
+        earnings_date = event.earnings_date
+
+        logger.debug(f"Validating option chain snapshot for {symbol} on {earnings_date}")
+
+        # Check if snapshot exists for this date
+        try:
+            available_snapshots = self.option_chain_reader.get_available_snapshots(symbol)
+
+            if earnings_date not in available_snapshots:
+                logger.debug(
+                    f"No snapshot for {symbol} on {earnings_date}. "
+                    f"Available: {len(available_snapshots)} dates total"
+                )
+                return SnapshotCoverageReport(
+                    symbol=symbol,
+                    date=earnings_date,
+                    available=False,
+                    reason="No option chain snapshot captured for this date",
+                )
+
+            # Check if snapshot has expirations
+            expirations = self.option_chain_reader.get_available_expirations(
+                underlying=symbol,
+                as_of=earnings_date,
+            )
+
+            if not expirations:
+                logger.debug(
+                    f"Snapshot for {symbol} on {earnings_date} has no expirations"
+                )
+                return SnapshotCoverageReport(
+                    symbol=symbol,
+                    date=earnings_date,
+                    available=False,
+                    reason="Snapshot exists but contains no expirations",
+                )
+
+            logger.debug(
+                f"Snapshot OK for {symbol} on {earnings_date}: "
+                f"{len(expirations)} expirations available"
+            )
+
+            return SnapshotCoverageReport(
+                symbol=symbol,
+                date=earnings_date,
+                available=True,
+                expiration_count=len(expirations),
+            )
+
+        except Exception as e:
+            logger.warning(
+                f"Error checking snapshot for {symbol} on {earnings_date}: {e}"
+            )
+            return SnapshotCoverageReport(
+                symbol=symbol,
+                date=earnings_date,
+                available=False,
+                reason=f"Error reading snapshot: {str(e)}",
             )
 
     def validate_option_contracts(

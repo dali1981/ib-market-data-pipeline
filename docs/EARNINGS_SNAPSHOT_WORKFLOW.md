@@ -567,7 +567,12 @@ Generally, only stocks with:
 - Filter your earnings list to large-cap stocks if you want to avoid empties
 - Use market cap / volume filters when loading earnings data
 
-**Example filtering:** - `dlt-ibapi load-earnings earnings.json --symbols AAPL MSFT GOOGL DIS AMAT`
+**Example filtering:**
+```bash
+dlt-ibapi load-earnings earnings.json --symbols AAPL MSFT GOOGL DIS AMAT
+```
+
+**Note:** As of 2025-11-13, the snapshot command now correctly reports expiration and strike counts by reading pre-computed counts from the main table (DLT normalizes arrays into child tables)
 
 ---
 
@@ -616,10 +621,30 @@ dlt-ibapi snapshot --earnings-date 2025-11-13 --earnings-time PRE_MARKET
 #   ...
 ```
 
-To see detailed logs:
-- Check `INFO` level logs in stdout
-- Use `--verbose` flag when available
-- Logs show: symbol processing, success/failure, counts, duration
+**Logging Options (Added 2025-11-13):**
+
+```bash
+# Write logs to file with auto-rotation (10MB limit)
+dlt-ibapi snapshot --earnings-date 2025-11-13 --log-file snapshot.log
+
+# Enable verbose (DEBUG) logging
+dlt-ibapi snapshot --earnings-date 2025-11-13 --verbose --log-file snapshot.log
+
+# Suppress INFO logs (only show WARNING+)
+dlt-ibapi snapshot --earnings-date 2025-11-13 --quiet
+
+# Combine options
+dlt-ibapi snapshot --earnings-date 2025-11-13 \
+  --verbose \
+  --log-file logs/snapshot_$(date +%Y%m%d).log
+```
+
+**Available logging flags:**
+- `--log-file PATH`: Write all logs to file with automatic rotation at 10MB
+- `--verbose` / `-v`: Enable DEBUG level logging (detailed execution info)
+- `--quiet` / `-q`: Suppress INFO logs (only WARNING and ERROR messages)
+
+**Note:** When `--log-file` is specified, all Python logging output goes to the file, while console output (Rich tables and progress) still displays on screen
 
 ---
 

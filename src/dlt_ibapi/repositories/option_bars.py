@@ -133,7 +133,7 @@ class OptionBarsReader(ParquetReaderBase):
                 "underlying = $underlying",
                 "expiry = $expiry",
                 "strike = $strike",
-                "right = $right",
+                "\"right\" = $right",  # Quote 'right' as it's a SQL reserved keyword
                 "bar_size = $bar_size"
             ]
 

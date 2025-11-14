@@ -24,14 +24,15 @@ File format (JSON array):
 """
 
 import json
-import logging
 import re
 from pathlib import Path
 from typing import List, Optional
 from datetime import date, datetime
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+from dlt_ibapi.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass

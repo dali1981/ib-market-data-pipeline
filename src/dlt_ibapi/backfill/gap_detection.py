@@ -1,6 +1,31 @@
 """
 Gap detection utilities for market data backfilling.
 
+⚠️  DEPRECATED: This module is deprecated in favor of download_planner.py
+
+Use DownloadPlanner instead:
+    from dlt_ibapi.backfill.download_planner import DownloadPlanner
+
+    # Old way:
+    gaps = missing_windows(present_dates, start, end, exchange)
+
+    # New way:
+    planner = DownloadPlanner(exchange="NYSE", bar_size="1 day")
+    plan = planner.create_plan(start, end, present_dates)
+    batches = plan.batches  # Optimized batches respecting IB API limits
+
+Key improvements in DownloadPlanner:
+- Respects IB API duration limits (no more 48 API calls for 317 days)
+- Better terminology ("download plan" vs "gaps")
+- Works for fresh downloads (no existing data)
+- Reusable across all asset types (stocks, options, futures, etc.)
+
+This module will be removed in a future version.
+
+---
+
+Legacy documentation:
+
 Identifies missing date ranges in historical data using market calendars
 that account for both weekends and exchange-specific holidays.
 """

@@ -16,16 +16,35 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 
+def _get_default_database_path() -> Path:
+    """Get default database path from storage config.
+
+    Falls back to 'data' if storage config not available.
+    """
+    try:
+        from delta_lake_storage import get_config
+        config = get_config()
+        return Path(config.storage.base_path)
+    except Exception:
+        return Path("data")
+
+
 # Backfill Equity Models
 
 class BackfillEquityParams(BaseModel):
     """Parameters for equity backfill operation.
 
-    Validates all inputs including date ranges, symbols, bar sizes, etc.
+    Supports two modes:
+    1. Explicit symbols: Provide 'symbols' list
+    2. Earnings mode: Provide 'earnings_date' to auto-load symbols from earnings calendar
+
+    Either 'symbols' OR 'earnings_date' must be provided (mutually exclusive).
     """
     model_config = ConfigDict(frozen=True)
 
-    symbols: List[str] = Field(..., min_length=1, description="Stock symbols to backfill")
+    symbols: Optional[List[str]] = Field(default=None, min_length=1, description="Stock symbols to backfill (for explicit mode)")
+    earnings_date: Optional[date] = Field(default=None, description="Earnings date to backfill all symbols (for batch mode)")
+    earnings_dataset_name: str = Field("earnings", description="Dataset name for earnings data (only used with earnings_date)")
     start_date: date = Field(..., description="Start date for backfill")
     end_date: date = Field(..., description="End date for backfill")
     bar_size: str = Field(
@@ -35,7 +54,13 @@ class BackfillEquityParams(BaseModel):
     )
     pipeline_name: str = Field(..., min_length=1, description="DLT pipeline name")
     dataset_name: str = Field("stocks", description="Dataset name")
-    database_path: Path = Field(default=Path("data"), description="Path to data directory")
+    database_path: Path = Field(default_factory=_get_default_database_path, description="Path to data directory")
+    use_delta: bool = Field(default=False, description="Use Delta Lake table format (ACID, time travel)")
+    client_id: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="IB Gateway client ID (overrides config default if provided)"
+    )
 
     @field_validator('end_date')
     @classmethod
@@ -47,9 +72,18 @@ class BackfillEquityParams(BaseModel):
 
     @field_validator('symbols')
     @classmethod
-    def validate_symbols(cls, v: List[str]) -> List[str]:
+    def validate_symbols(cls, v: Optional[List[str]]) -> Optional[List[str]]:
         """Ensure symbols are uppercase and non-empty."""
+        if v is None:
+            return None
         return [s.upper().strip() for s in v if s.strip()]
+
+    def model_post_init(self, __context):
+        """Validate that exactly one of symbols or earnings_date is provided."""
+        if self.symbols and self.earnings_date:
+            raise ValueError('Cannot specify both symbols and earnings_date. Use one or the other.')
+        if not self.symbols and not self.earnings_date:
+            raise ValueError('Must specify either symbols or earnings_date')
 
 
 class BackfillEquityResult(BaseModel):
@@ -71,11 +105,30 @@ class BackfillEquityResult(BaseModel):
 # Backfill Options Models
 
 class BackfillOptionsParams(BaseModel):
-    """Parameters for options backfill operation."""
+    """Parameters for options backfill operation.
+
+    Supports two modes:
+    1. Single symbol mode: Provide 'underlying' and 'spot_price'
+    2. Earnings batch mode: Provide 'earnings_date' (auto-loads symbols, spot prices, expirations)
+
+    Either 'underlying' OR 'earnings_date' must be provided (mutually exclusive).
+    """
     model_config = ConfigDict(frozen=True)
 
-    underlying: str = Field(..., min_length=1, description="Underlying symbol")
-    spot_price: float = Field(..., gt=0, description="Current spot price")
+    # Mode 1: Single symbol
+    underlying: Optional[str] = Field(default=None, min_length=1, description="Underlying symbol (for single mode)")
+    spot_price: Optional[float] = Field(default=None, gt=0, description="Current spot price (for single mode)")
+
+    # Mode 2: Earnings batch
+    earnings_date: Optional[date] = Field(default=None, description="Earnings date to backfill all symbols (for batch mode)")
+    auto_spot_price: bool = Field(True, description="Auto-extract spot prices from equity bars (used with earnings_date)")
+    k_expirations: Optional[int] = Field(default=None, ge=1, le=12, description="Limit to k closest expirations beyond earnings date (None = all)")
+    snapshot_date: Optional[date] = Field(default=None, description="Snapshot date to read expirations from (defaults to earnings_date)")
+    earnings_dataset_name: str = Field("earnings", description="Dataset name for earnings data")
+    option_chains_dataset_name: str = Field("option_chains", description="Dataset name for option chains snapshots")
+    stocks_dataset_name: str = Field("stocks", description="Dataset name for equity bars (for spot price extraction)")
+
+    # Common parameters
     start_date: date = Field(..., description="Start date for backfill")
     end_date: date = Field(..., description="End date for backfill")
     bar_size: str = Field(
@@ -89,11 +142,17 @@ class BackfillOptionsParams(BaseModel):
         description="Contract selection mode"
     )
     k_strikes: int = Field(5, ge=1, le=50, description="Number of strikes around ATM")
-    min_dte: int = Field(7, ge=0, description="Minimum days to expiration")
-    max_dte: int = Field(60, ge=0, description="Maximum days to expiration")
+    min_dte: int = Field(7, ge=0, description="Minimum days to expiration (not used in earnings mode)")
+    max_dte: int = Field(60, ge=0, description="Maximum days to expiration (not used in earnings mode)")
     pipeline_name: str = Field(..., min_length=1, description="DLT pipeline name")
     dataset_name: str = Field("options", description="Dataset name")
-    database_path: Path = Field(default=Path("data"), description="Path to data directory")
+    database_path: Path = Field(default_factory=_get_default_database_path, description="Path to data directory")
+    use_delta: bool = Field(default=False, description="Use Delta Lake table format (ACID, time travel)")
+    client_id: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="IB Gateway client ID (overrides config default if provided)"
+    )
 
     @field_validator('end_date')
     @classmethod
@@ -113,9 +172,28 @@ class BackfillOptionsParams(BaseModel):
 
     @field_validator('underlying')
     @classmethod
-    def validate_underlying(cls, v: str) -> str:
-        """Ensure underlying is uppercase."""
-        return v.upper().strip()
+    def validate_underlying(cls, v: Optional[str]) -> Optional[str]:
+        """Ensure underlying is uppercase if provided."""
+        return v.upper().strip() if v else None
+
+    def model_post_init(self, __context):
+        """Validate mode-specific requirements."""
+        # Check mutual exclusivity
+        if self.underlying and self.earnings_date:
+            raise ValueError('Cannot specify both underlying and earnings_date. Use one or the other.')
+        if not self.underlying and not self.earnings_date:
+            raise ValueError('Must specify either underlying or earnings_date')
+
+        # Validate single symbol mode requirements
+        if self.underlying and not self.spot_price:
+            raise ValueError('spot_price is required when using underlying (single symbol mode)')
+
+        # Validate earnings mode requirements
+        if self.earnings_date:
+            if self.spot_price is not None:
+                raise ValueError('spot_price should not be specified in earnings mode (use auto_spot_price=True)')
+            if not self.auto_spot_price:
+                raise ValueError('auto_spot_price must be True in earnings mode (cannot manually specify spot prices for batch)')
 
 
 class BackfillOptionsResult(BaseModel):
@@ -157,7 +235,8 @@ class SnapshotParams(BaseModel):
     pipeline_name: str = Field(..., min_length=1, description="DLT pipeline name")
     dataset_name: str = Field("option_chains", description="Dataset name")
     earnings_dataset_name: str = Field("earnings", description="Dataset name for earnings data")
-    database_path: Path = Field(default=Path("data"), description="Path to data directory")
+    database_path: Path = Field(default_factory=_get_default_database_path, description="Path to data directory")
+    use_delta: bool = Field(default=False, description="Use Delta Lake table format (ACID, time travel)")
     cache_path: Path = Field(default=Path(".dlt-ibapi/cache"), description="Contract cache path")
 
     @field_validator('underlying')
@@ -222,7 +301,7 @@ class ListSnapshotsParams(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     underlying: Optional[str] = Field(default=None, description="Filter by underlying symbol")
-    database_path: Path = Field(default=Path("data"), description="Path to data directory")
+    database_path: Path = Field(default_factory=_get_default_database_path, description="Path to data directory")
     dataset_name: str = Field("option_chains", description="Dataset name")
     start_date: Optional[date] = Field(default=None, description="Filter by start date")
     end_date: Optional[date] = Field(default=None, description="Filter by end date")
@@ -307,12 +386,16 @@ class ResolveContractsParams(BaseModel):
     symbols: Optional[List[str]] = Field(default=None, description="Explicit list of symbols to resolve")
     earnings_date: Optional[date] = Field(default=None, description="Load symbols from earnings on this date")
     earnings_file: Optional[Path] = Field(default=None, description="Load symbols from earnings JSON file")
-    database_path: Path = Field(default=Path("data"), description="Path to data directory")
+    database_path: Path = Field(default_factory=_get_default_database_path, description="Path to data directory")
     cache_path: Path = Field(default=Path(".dlt-ibapi/cache"), description="Path to contract cache")
     exchange: str = Field(default="SMART", description="Exchange for contract resolution")
     currency: str = Field(default="USD", description="Currency for contract resolution")
-    sec_type: str = Field(default="STK", description="Security type")
+    sec_type: str = Field(default="STK", description="Security type (STK or OPT)")
     timeout: float = Field(default=10.0, gt=0, description="Timeout per symbol in seconds")
+
+    # Option-specific parameters (only used when sec_type="OPT")
+    snapshot_date: Optional[date] = Field(default=None, description="Load option contracts from snapshot on this date")
+    underlying: Optional[str] = Field(default=None, description="Filter by underlying symbol (for options)")
 
     @field_validator('symbols')
     @classmethod
@@ -333,11 +416,18 @@ class ResolveContractsParams(BaseModel):
 
 class ContractResolutionInfo(BaseModel):
     """Information about a single resolved contract."""
-    symbol: str = Field(..., description="Stock symbol")
+    symbol: str = Field(..., description="Symbol (underlying for options)")
     conid: int = Field(..., description="IB contract ID")
     exchange: str = Field(..., description="Primary exchange")
     currency: str = Field(..., description="Currency")
-    long_name: Optional[str] = Field(default=None, description="Company name")
+    sec_type: str = Field(default="STK", description="Security type (STK or OPT)")
+    long_name: Optional[str] = Field(default=None, description="Company/contract name")
+
+    # Option-specific fields
+    strike: Optional[float] = Field(default=None, description="Strike price (options only)")
+    right: Optional[str] = Field(default=None, description="C or P (options only)")
+    expiry: Optional[str] = Field(default=None, description="Expiration YYYYMMDD (options only)")
+    local_symbol: Optional[str] = Field(default=None, description="Local symbol (e.g., AAPL  251219C00150000)")
 
 
 class ResolveContractsResult(BaseModel):

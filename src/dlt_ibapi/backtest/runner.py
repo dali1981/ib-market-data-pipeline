@@ -8,7 +8,6 @@ Provides a simplified backtest execution engine optimized for options:
 - Performance metrics calculation
 """
 
-import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime, date, timedelta
@@ -20,7 +19,12 @@ from tools.backtests.executor import SimulatedExecutor
 from tools.options.models import Position, Greeks, Signal
 from tools.strategies.options.base import OptionsStrategy
 
-logger = logging.getLogger(__name__)
+from dlt_ibapi.backtest.validation import BacktestDataValidator
+from dlt_ibapi.backtest.earnings_loader import EarningsEvent
+from dlt_ibapi.backtest.data_providers import BacktestDataRequirements, EarningsCalendarProvider
+from dlt_ibapi.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class OptionsBacktestResult:
@@ -113,38 +117,60 @@ class OptionsBacktestResult:
 
 class OptionsBacktestRunner:
     """
-    **DEPRECATED / NON-FUNCTIONAL**: This backtest runner is currently broken.
+    Options backtest runner for earnings calendar spread strategies.
 
-    **ISSUE**: The IB API does NOT provide historical option chain snapshots.
-    This runner was designed assuming historical chains were available, but they're not.
+    Uses daily-collected option chain snapshots combined with option bars
+    to backtest multi-leg option strategies.
 
-    **CURRENT STATUS**:
-    - Will not crash but will skip ALL option signals
-    - Logs deprecation warning on first run
-    - Returns empty results (0 trades)
+    **Data Requirements**:
+    1. **Option Chain Snapshots**: Daily snapshots of available options (metadata)
+       - Collected via: `dlt-ibapi snapshot SYMBOL --date YYYY-MM-DD`
+       - Stored in: `data/option_chains/*.parquet`
+       - Contains: Available strikes, expirations (no prices)
 
-    **PROPER IMPLEMENTATION NEEDED**:
-    See docs/BACKTEST_QUICKSTART.md for details on:
-    1. IB API data limitations
-    2. Alternative approaches using option bars
-    3. Deterministic option selection rules
-    4. Data collection requirements
+    2. **Option Bars**: OHLCV data for specific contracts
+       - Collected via: `dlt-ibapi backfill-options SYMBOL ...`
+       - Must be collected BEFORE expiration
+       - Contains: open, high, low, close, volume
 
-    **WORKAROUND**:
-    Until properly fixed, you can:
-    1. Use the validation system to check data availability
-    2. Manually implement earnings-driven backtest logic
-    3. Contribute a fixed implementation (PRs welcome!)
+    3. **Equity Bars**: Underlying spot prices
+       - Collected via: `dlt-ibapi backfill-equity SYMBOL`
+       - Contains: spot price, volume
 
-    Original (broken) example:
-        >>> from dlt_ibapi.backtest import IBBacktestDataProvider
+    **Validation**: Runner validates data availability before execution.
+    Dates without complete data are automatically skipped with clear logging.
+
+    Example:
+        >>> from dlt_ibapi.backtest import (
+        ...     IBBacktestDataProvider,
+        ...     EarningsCalendarProvider,
+        ...     OptionsChainProvider,
+        ...     OptionsBacktestRunner,
+        ... )
         >>> from tools.strategies.options import IVBasedCalendarSpreadStrategy
         >>>
+        >>> # Initialize data providers
         >>> data_provider = IBBacktestDataProvider("./data")
-        >>> # NOTE: OptionsChainProvider is deprecated - don't use
+        >>> chain_provider = OptionsChainProvider(data_provider.option_chain_reader)
+        >>> earnings_provider = EarningsCalendarProvider("./data/earnings")
         >>>
-        >>> runner = OptionsBacktestRunner(...)
-        >>> result = runner.run(...)  # Returns 0 trades
+        >>> # Create strategy
+        >>> strategy = IVBasedCalendarSpreadStrategy(config)
+        >>>
+        >>> # Run backtest with validation
+        >>> runner = OptionsBacktestRunner(
+        ...     strategy=strategy,
+        ...     data_provider=data_provider,
+        ...     option_chain_provider=chain_provider,
+        ...     initial_capital=100000,
+        ...     earnings_calendar_provider=earnings_provider,
+        ... )
+        >>> result = runner.run(
+        ...     start_date=date(2024, 1, 1),
+        ...     end_date=date(2024, 12, 31),
+        ...     validate_data=True,  # Pre-flight validation
+        ... )
+        >>> print(f"Return: {result.total_return_pct:.2f}%")
     """
 
     def __init__(
@@ -154,6 +180,7 @@ class OptionsBacktestRunner:
         option_chain_provider: "OptionsChainProvider",
         initial_capital: float,
         commission_per_contract: float = 0.65,
+        earnings_calendar_provider: Optional[EarningsCalendarProvider] = None,
     ):
         """
         Initialize options backtest runner.
@@ -164,12 +191,15 @@ class OptionsBacktestRunner:
             option_chain_provider: Provider for option chains
             initial_capital: Starting capital
             commission_per_contract: Commission per option contract
+            earnings_calendar_provider: Optional provider for earnings calendar data
+                (used for pre-flight validation of earnings-based strategies)
         """
         self.strategy = strategy
         self.data_provider = data_provider
         self.option_chain_provider = option_chain_provider
         self.initial_capital = initial_capital
         self.commission_per_contract = commission_per_contract
+        self.earnings_calendar_provider = earnings_calendar_provider
 
         # Get symbols from strategy config
         self.symbols = strategy.config.underlying_symbols
@@ -192,6 +222,8 @@ class OptionsBacktestRunner:
         self,
         start_date: date,
         end_date: date,
+        earnings_events: Optional[List[EarningsEvent]] = None,
+        validate_data: bool = True,
     ) -> OptionsBacktestResult:
         """
         Run options backtest.
@@ -199,9 +231,17 @@ class OptionsBacktestRunner:
         Args:
             start_date: Backtest start date
             end_date: Backtest end date
+            earnings_events: Optional list of earnings events to validate
+                (if not provided and earnings_calendar_provider is available,
+                events will be loaded automatically)
+            validate_data: Whether to run pre-flight data validation
+                (recommended for earnings-based strategies)
 
         Returns:
             OptionsBacktestResult with performance metrics
+
+        Raises:
+            ValueError: If validation is enabled and no valid events exist
         """
         logger.info(
             f"Starting options backtest: {start_date} → {end_date} "
@@ -219,6 +259,10 @@ class OptionsBacktestRunner:
             current_date += timedelta(days=1)
 
         logger.info(f"Backtest will run over {len(trading_days)} trading days")
+
+        # Pre-flight validation (if enabled and earnings events available)
+        if validate_data and (earnings_events or self.earnings_calendar_provider):
+            self._run_validation(earnings_events, start_date, end_date)
 
         # Main backtest loop
         for current_date in trading_days:
@@ -241,6 +285,137 @@ class OptionsBacktestRunner:
         )
 
         return result
+
+    def _run_validation(
+        self,
+        earnings_events: Optional[List[EarningsEvent]],
+        start_date: date,
+        end_date: date,
+    ):
+        """
+        Run pre-flight data validation for earnings-based backtest.
+
+        Validates that all required data is available:
+        - Equity bars with sufficient coverage
+        - Option chain snapshots for earnings dates
+        - Option contracts for target DTE ranges
+        - Option bars for all required contracts
+
+        Args:
+            earnings_events: List of earnings events to validate (if None, loads from provider)
+            start_date: Backtest start date
+            end_date: Backtest end date
+
+        Raises:
+            ValueError: If no valid events exist with complete data
+        """
+        logger.info("=" * 60)
+        logger.info("Running pre-flight data validation...")
+        logger.info("=" * 60)
+
+        # Get earnings events
+        if earnings_events is None:
+            if self.earnings_calendar_provider is None:
+                logger.warning("No earnings events provided and no earnings calendar provider available")
+                return
+
+            # Load earnings events from provider
+            earnings_events = self.earnings_calendar_provider.get_upcoming_earnings(
+                days_ahead=(end_date - start_date).days,
+                timestamp=datetime.combine(start_date, datetime.min.time()),
+            )
+
+            if not earnings_events:
+                logger.warning(f"No earnings events found in date range {start_date} to {end_date}")
+                return
+
+            # Convert to EarningsEvent objects if needed
+            earnings_events_typed = []
+            for event in earnings_events:
+                if isinstance(event, EarningsEvent):
+                    earnings_events_typed.append(event)
+                elif isinstance(event, dict):
+                    # Convert dict to EarningsEvent
+                    earnings_events_typed.append(EarningsEvent(
+                        symbol=event["symbol"],
+                        earnings_date=event["earnings_date"],
+                        earnings_time=event.get("earnings_time", "UNKNOWN"),
+                        company_name=event.get("company_name", ""),
+                        eps_forecast=event.get("eps_forecast"),
+                        fiscal_quarter=event.get("fiscal_quarter"),
+                    ))
+            earnings_events = earnings_events_typed
+
+        # Filter events by symbols (only validate symbols we're trading)
+        events_to_validate = [e for e in earnings_events if e.symbol in self.symbols]
+
+        if not events_to_validate:
+            logger.warning(
+                f"No earnings events found for tracked symbols: {', '.join(self.symbols)}"
+            )
+            return
+
+        logger.info(f"Validating {len(events_to_validate)} earnings events for {len(self.symbols)} symbols")
+
+        # Create requirements from strategy config
+        requirements = BacktestDataRequirements()
+
+        # Override with strategy config if available
+        if hasattr(self.strategy.config, 'front_month_dte'):
+            requirements.front_month_dte = self.strategy.config.front_month_dte
+        if hasattr(self.strategy.config, 'back_month_dte'):
+            requirements.back_month_dte = self.strategy.config.back_month_dte
+        if hasattr(self.strategy.config, 'min_dte'):
+            requirements.front_month_dte = (self.strategy.config.min_dte, requirements.front_month_dte[1])
+        if hasattr(self.strategy.config, 'max_dte'):
+            requirements.back_month_dte = (requirements.back_month_dte[0], self.strategy.config.max_dte)
+
+        # Initialize validator
+        validator = BacktestDataValidator(
+            equity_reader=self.data_provider.equity_reader,
+            option_bars_reader=self.data_provider.option_bars_reader,
+            option_chain_reader=self.data_provider.option_chain_reader,
+        )
+
+        # Run validation
+        validation_result = validator.validate_all(
+            earnings_events=events_to_validate,
+            requirements=requirements,
+        )
+
+        # Log results
+        logger.info("-" * 60)
+        logger.info(f"Validation Results:")
+        logger.info(f"  Total events:     {validation_result.total_events}")
+        logger.info(f"  Valid events:     {validation_result.valid_events}")
+        logger.info(f"  Invalid events:   {validation_result.invalid_events}")
+        logger.info(f"  Success rate:     {validation_result.valid_events / validation_result.total_events * 100:.1f}%")
+        logger.info("-" * 60)
+
+        if validation_result.invalid_symbols:
+            logger.warning("Symbols with missing data:")
+            for symbol, reason in validation_result.invalid_symbols.items():
+                logger.warning(f"  {symbol}: {reason}")
+
+        if validation_result.skip_reasons:
+            logger.warning("Reasons for skipping events:")
+            for reason, count in validation_result.skip_reasons.items():
+                logger.warning(f"  {reason}: {count} events")
+
+        # Raise error if no valid events
+        if validation_result.valid_events == 0:
+            raise ValueError(
+                f"No valid earnings events with complete data found.\n"
+                f"Validated {validation_result.total_events} events, all failed validation.\n"
+                f"Common issues:\n"
+                f"  1. Missing option chain snapshots (run: dlt-ibapi snapshot SYMBOL --date YYYY-MM-DD)\n"
+                f"  2. Missing equity bars (run: dlt-ibapi backfill-equity SYMBOL)\n"
+                f"  3. Missing option bars (run: dlt-ibapi backfill-options SYMBOL ...)\n"
+                f"Check validation warnings above for specific issues."
+            )
+
+        logger.info(f"✓ Validation passed: {validation_result.valid_events} events have complete data")
+        logger.info("=" * 60)
 
     def _execute_day(self, timestamp: datetime):
         """
@@ -353,28 +528,84 @@ class OptionsBacktestRunner:
 
     def _get_option_chains(self, timestamp: datetime) -> Dict[str, Any]:
         """
-        DEPRECATED: This method is non-functional.
+        Get option chain snapshots for current date.
 
-        The IB API does not provide historical option chain snapshots.
-        This method is kept to prevent crashes but always returns empty dict.
+        Reads daily-collected snapshots from OptionChainSnapshotReader.
+        Returns metadata about available options (strikes, expirations) for each symbol.
 
-        TODO: Rewrite backtest to use deterministic option selection:
-        1. Load earnings events
-        2. For each event, determine options using rules (ATM, DTE range)
-        3. Check if option bars exist using OptionBarsReader
-        4. Execute spread only if both legs have sufficient bar data
+        Args:
+            timestamp: Current backtest timestamp
 
-        See: docs/BACKTEST_QUICKSTART.md for details
+        Returns:
+            Dict mapping symbol -> chain data:
+                {
+                    "AAPL": {
+                        "expirations": [date(2024, 11, 15), date(2024, 12, 20), ...],
+                        "snapshot_date": date(2024, 10, 22),
+                        "underlying": "AAPL",
+                    },
+                    ...
+                }
+
+            Returns empty dict if no snapshots available for any symbol.
         """
-        if not hasattr(self, '_chain_warning_logged'):
-            logger.warning(
-                "OptionsChainProvider is deprecated and non-functional. "
-                "Backtest will skip all option signal generation. "
-                "See docs/BACKTEST_QUICKSTART.md for proper implementation."
-            )
-            self._chain_warning_logged = True
+        current_date = timestamp.date()
+        chains = {}
 
-        return {}  # Always return empty - option chains not available
+        # Get option chain reader from data provider
+        option_chain_reader = self.data_provider.option_chain_reader
+
+        for symbol in self.symbols:
+            try:
+                # Check if snapshot exists for this date
+                available_snapshots = option_chain_reader.get_available_snapshots(symbol)
+
+                if current_date not in available_snapshots:
+                    logger.debug(
+                        f"No option chain snapshot for {symbol} on {current_date}. "
+                        f"Available dates: {len(available_snapshots)} total"
+                    )
+                    continue
+
+                # Get available expirations from snapshot (filtered by strategy DTE)
+                min_dte = getattr(self.strategy.config, 'min_dte', 7)
+                max_dte = getattr(self.strategy.config, 'max_dte', 90)
+
+                expirations = option_chain_reader.get_available_expirations(
+                    underlying=symbol,
+                    as_of=current_date,
+                    min_dte=min_dte,
+                    max_dte=max_dte,
+                )
+
+                if not expirations:
+                    logger.debug(
+                        f"Snapshot for {symbol} on {current_date} has no expirations "
+                        f"in DTE range [{min_dte}, {max_dte}]"
+                    )
+                    continue
+
+                chains[symbol] = {
+                    "expirations": expirations,
+                    "snapshot_date": current_date,
+                    "underlying": symbol,
+                }
+
+                logger.debug(
+                    f"Loaded snapshot for {symbol} on {current_date}: "
+                    f"{len(expirations)} expirations available"
+                )
+
+            except Exception as e:
+                logger.warning(
+                    f"Error loading option chain snapshot for {symbol} on {current_date}: {e}"
+                )
+                continue
+
+        if not chains:
+            logger.debug(f"No option chain snapshots available for any symbol on {current_date}")
+
+        return chains
 
     def _handle_expirations(self, current_date: date):
         """Close expired positions."""

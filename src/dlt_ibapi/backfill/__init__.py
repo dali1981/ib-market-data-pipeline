@@ -1,6 +1,7 @@
 """Backfill infrastructure for historical market data."""
 
-from .gap_detection import missing_windows, business_day_range, trading_day_range
+from .download_planner import DownloadPlanner, DownloadPlan, IBDurationLimit
+from .gap_detection import missing_windows, business_day_range, trading_day_range  # Deprecated
 from .market_calendar import MarketCalendar, get_market_calendar
 from .config import (
     BackfillConfig,
@@ -24,7 +25,11 @@ from .contract_selection import (
 )
 
 __all__ = [
-    # Gap detection
+    # Download planning (NEW)
+    "DownloadPlanner",
+    "DownloadPlan",
+    "IBDurationLimit",
+    # Gap detection (DEPRECATED - use DownloadPlanner)
     "missing_windows",
     "business_day_range",
     "trading_day_range",

@@ -4,52 +4,50 @@
 
 ---
 
-## ⚠️ CRITICAL: Current Implementation Status
+## Overview
 
-**THE BACKTEST IS CURRENTLY NON-FUNCTIONAL** due to fundamental IB API limitations.
+The `dlt-ibapi` backtest system enables you to test options strategies using **daily-collected market data**. The system works by combining:
 
-### What's Broken
+1. **Daily option chain snapshots** - Available strikes and expirations (metadata)
+2. **Option bars** - OHLCV price data for specific contracts
+3. **Equity bars** - Underlying spot prices
+4. **Earnings calendar** - Earnings event dates and timing
 
-The backtest was implemented assuming the IB API provides historical option chain snapshots (bid/ask prices, volume, open interest for all options on past dates). **This assumption is incorrect.**
+### How It Works
 
-**IB API Limitation** (from [official docs](https://interactivebrokers.github.io/tws-api/historical_limitations.html)):
-> "End of Day (EOD) data for options, FOPs, warrants and structured products" **cannot be retrieved**.
+The backtest follows this daily workflow:
 
-> "Expired options, FOPs, warrants and structured products" have **no historical data** accessible.
+```
+For each backtest date:
+├─ Check if option chain snapshot exists for this date
+├─ Check if equity bars exist for underlying
+├─ For each earnings event on this date:
+│  ├─ Determine option contracts using DTE rules (14-21 DTE front, 35-50 DTE back)
+│  ├─ Check if option bars exist for selected contracts
+│  ├─ If all data available: Execute spread
+│  └─ If data missing: Skip event (logged)
+└─ Continue to next date
+```
 
-### What This Means
+**Key Principle**: Data must be collected **daily and proactively**. Option chain snapshots cannot be collected retroactively for expired options.
 
-❌ **You CANNOT**:
-- Get complete option chains for historical dates
-- Screen all available options for "best spread" on past dates
-- Get historical bid/ask spreads or volume/open interest
-- Backtest strategies requiring expired options data
+### Data Collection Requirements
 
-✅ **You CAN**:
-- Get historical OHLCV bars for SPECIFIC option contracts (non-expired)
-- Backtest using deterministic option selection rules (ATM, DTE range)
-- Validate data availability before attempting backtest
+✅ **Required Daily Collections**:
+- Option chain snapshots (`dlt-ibapi snapshot SYMBOL --date YYYY-MM-DD`)
+- Option bars for contracts before they expire (`dlt-ibapi backfill-options ...`)
+- Equity bars (can be backfilled anytime: `dlt-ibapi backfill-equity ...`)
 
-### Current Workaround
+✅ **Validation System**:
+- Pre-flight validation checks data availability before backtest
+- Clear error messages about missing data
+- Auto-filtering of dates without complete data
 
-Until properly reimplemented:
-
-1. **Use the Validation System** to check data availability:
-   ```python
-   from dlt_ibapi.backtest import BacktestDataValidator, EarningsCalendarLoader
-
-   loader = EarningsCalendarLoader()
-   events = loader.load_file("earnings_2024-10-22.txt")
-
-   validator = BacktestDataValidator(equity_reader, option_bars_reader)
-   report = validator.validate_all(events, requirements)
-
-   print(f"Valid events: {report.valid_events}/{report.total_events}")
-   ```
-
-2. **Manually implement earnings-driven logic** using option bars directly
-
-3. **Contribute a fix** (see [GitHub issues](https://github.com/anthropics/claude-code/issues))
+✅ **What This Enables**:
+- Backtest earnings calendar spread strategies
+- Test different DTE ranges and strike selections
+- Validate historical strategy performance
+- Analyze which earnings events had complete data
 
 ---
 
@@ -57,13 +55,13 @@ Until properly reimplemented:
 
 1. [Prerequisites](#prerequisites)
 2. [Data Requirements](#data-requirements)
-3. [IB API Data Limitations](#ib-api-data-limitations) 👈 **READ THIS FIRST**
+3. [Daily Data Collection Workflow](#daily-data-collection-workflow)
 4. [Step 1: Verify Data Availability](#step-1-verify-data-availability)
-4. [Step 2: Download Required Data](#step-2-download-required-data)
-5. [Step 3: Run Backtest](#step-3-run-backtest)
-6. [Step 4: Analyze Results](#step-4-analyze-results)
-7. [Troubleshooting](#troubleshooting)
-8. [Advanced Usage](#advanced-usage)
+5. [Step 2: Download Required Data](#step-2-download-required-data)
+6. [Step 3: Run Backtest](#step-3-run-backtest)
+7. [Step 4: Analyze Results](#step-4-analyze-results)
+8. [Troubleshooting](#troubleshooting)
+9. [Advanced Usage](#advanced-usage)
 
 ---
 
@@ -118,285 +116,223 @@ Options backtesting requires **three types of data**:
 
 ---
 
-## IB API Data Limitations
+## Daily Data Collection Workflow
 
-### Understanding What Data IS Available
+### Three-Component Data Model
 
-The IB API provides **limited historical data** for options. Understanding these limitations is critical for backtest implementation.
+The backtest requires three types of data collected **daily and proactively**:
 
-#### ✅ Data You CAN Get
+#### 1. Option Chain Snapshots (Metadata Only)
+- **What**: Available strikes and expirations for each underlying
+- **Contains**: Contract IDs, strikes, expiration dates, DTE
+- **Does NOT contain**: Prices, bid/ask, volume, open interest
+- **Collection**: `dlt-ibapi snapshot SYMBOL --date YYYY-MM-DD --min-dte 7 --max-dte 90`
+- **Critical**: Must be collected daily; cannot be retrieved retroactively for expired options
 
-1. **Equity Bars (Historical OHLCV)**
-   - Available for all past dates
-   - All bar sizes supported (1 day, 1 hour, 5 mins, etc.)
-   - Example:
-   ```python
-   from dlt_ibapi.repositories import EquityBarsReader
+#### 2. Option Bars (Price Data)
+- **What**: OHLCV price data for specific option contracts
+- **Contains**: Open, high, low, close, volume for each contract
+- **Collection**: `dlt-ibapi backfill-options SYMBOL STRIKE --mode atm --dte-range 7 90`
+- **Critical**: Must be collected before options expire
 
-   reader = EquityBarsReader("./data", "stocks")
-   bars = reader.get_bars(
-       symbol="AAPL",
-       bar_size="1 day",
-       start_date=date(2023, 1, 1),
-       end_date=date(2024, 12, 31),
-   )
-   ```
+#### 3. Equity Bars (Underlying Prices)
+- **What**: Historical OHLCV for underlying stocks
+- **Contains**: Spot price, volume
+- **Collection**: `dlt-ibapi backfill-equity SYMBOL --start-date YYYY-MM-DD`
+- **Flexible**: Can be backfilled at any time (no expiration constraint)
 
-2. **Option Bars (Individual Contract OHLCV)**
-   - Available for **specific non-expired options** only
-   - Must know exact contract (strike, expiration, right)
-   - Cannot query expired options
-   - Example:
-   ```python
-   from dlt_ibapi.repositories import OptionBarsReader
+### How the Backtest Uses This Data
 
-   reader = OptionBarsReader("./data", "options")
-
-   # Works: Get bars for specific non-expired contract
-   bars = reader.get_bars(
-       symbol="AAPL",
-       strike=150.0,
-       expiration=date(2024, 12, 20),
-       right="C",  # Call
-       bar_size="1 day",
-       start_date=date(2024, 11, 1),
-       end_date=date(2024, 11, 13),
-   )
-   ```
-
-3. **Current Option Chain Parameters (Live Only)**
-   - Available for current day only
-   - Contains: Available strikes, expirations, contract IDs
-   - Does NOT contain: Historical bid/ask, volume, open interest
-   - Used for: Real-time option discovery, not backtesting
-
-#### ❌ Data You CANNOT Get
-
-From [IB API official documentation](https://interactivebrokers.github.io/tws-api/historical_limitations.html):
-
-> **"End of Day (EOD) data for options, FOPs, warrants and structured products cannot be retrieved."**
-
-> **"Expired options, FOPs, warrants and structured products have no historical data accessible."**
-
-**What This Means**:
-
-1. **No Historical Option Chain Snapshots**
-   - Cannot retrieve "all available options with prices" for past dates
-   - Cannot screen for "best spread" on historical dates
-   - Cannot see bid/ask/volume/OI for past dates
-
-2. **No Expired Options Data**
-   - Once an option expires, ALL historical data becomes inaccessible
-   - Cannot backtest strategies requiring expired contracts
-   - Must collect data BEFORE expiration
-
-3. **No EOD Option Data**
-   - Cannot get historical closing prices for option chains
-   - Cannot reconstruct complete option surfaces for past dates
-   - Cannot validate historical IV calculations against snapshots
-
-### Implications for Backtesting
-
-**Traditional Approach (DOES NOT WORK)**:
 ```python
-# ❌ This approach is impossible with IB API
+# For each backtest date:
 for date in backtest_dates:
-    # Get all available options on this date
-    option_chain = get_historical_option_chain(date)  # NOT AVAILABLE
+    # 1. Check if we have option chain snapshot for this date
+    snapshot = option_chain_reader.get_available_snapshots(symbol)
+    if date not in snapshot:
+        continue  # Skip - no snapshot available
 
-    # Screen for best spread
-    best_spread = find_best_spread(option_chain)  # IMPOSSIBLE
-
-    # Execute
-    execute_spread(best_spread)
-```
-
-**Required Approach (WORKS)**:
-```python
-# ✅ This approach works with IB API limitations
-for earnings_event in earnings_calendar:
-    # 1. Determine options using RULES (not screening)
-    front_month_options = find_options_by_dte_range(
-        underlying=earnings_event.symbol,
-        spot_price=get_spot_price(earnings_event.date),
-        dte_range=(14, 21),  # Deterministic selection
-        strike_selection="ATM",  # Rule-based
+    # 2. Get available expirations from snapshot
+    expirations = option_chain_reader.get_available_expirations(
+        underlying=symbol,
+        as_of=date,
+        min_dte=7,
+        max_dte=90,
     )
 
-    back_month_options = find_options_by_dte_range(
-        underlying=earnings_event.symbol,
-        spot_price=get_spot_price(earnings_event.date),
-        dte_range=(35, 50),
-        strike_selection="ATM",
-    )
+    # 3. Determine contracts using DTE rules
+    front_month = find_expiry_in_dte_range(expirations, 14, 21)
+    back_month = find_expiry_in_dte_range(expirations, 35, 50)
 
-    # 2. Check if we collected option bars for these specific contracts
-    if has_option_bars(front_month_options) and has_option_bars(back_month_options):
-        # 3. Execute spread using pre-collected bars
-        execute_spread(front_month_options, back_month_options)
+    # 4. Get spot price to find ATM strike
+    spot = equity_reader.get_bars(symbol, date)["close"]
+    strike = find_atm_strike(snapshot, spot)
+
+    # 5. Check if we have option bars for selected contracts
+    front_bars = option_bars_reader.get_bars(symbol, strike, front_month, "C", date)
+    back_bars = option_bars_reader.get_bars(symbol, strike, back_month, "C", date)
+
+    # 6. If all data available, execute trade
+    if front_bars and back_bars:
+        execute_calendar_spread(front_bars, back_bars)
     else:
-        # 4. Skip - insufficient data
-        log_skip_reason(f"Missing option bars for {earnings_event.symbol}")
+        log_skip(f"Missing option bars for {symbol} on {date}")
 ```
 
-### Data Collection Workflow
+### Data Collection Strategy
 
-To backtest options strategies, you must:
+**Daily Forward-Looking Collection** (Recommended):
+```bash
+# Run daily at market close
+TODAY=$(date +%Y-%m-%d)
 
-**1. Identify Events in Advance**
-   - Load earnings calendar from external source (Nasdaq)
-   - File format: `/Users/mohamedali/Desktop/earnings_[date].txt`
-   - Example structure:
-   ```json
-   {
-     "data": {
-       "rows": [
-         {
-           "symbol": "AAPL",
-           "companyName": "Apple Inc.",
-           "earningsDate": "2024-10-22",
-           "earningsTime": "AMC",
-           "epsForecast": "$0.41"
-         }
-       ]
-     }
-   }
-   ```
+# 1. Snapshot option chains (captures what's available today)
+uv run dlt-ibapi snapshot AAPL MSFT GOOGL --date $TODAY --min-dte 7 --max-dte 90
 
-**2. Determine Options Using Rules**
-   - Select strikes: ATM, OTM by X%, etc.
-   - Select expirations: Front month (14-21 DTE), back month (35-50 DTE)
-   - No screening required - use deterministic rules
+# 2. Collect option bars for contracts expiring soon
+uv run dlt-ibapi backfill-options AAPL 150.0 --mode atm --dte-range 7 90
 
-**3. Collect Option Bars BEFORE Expiration**
-   ```bash
-   # For each earnings event, collect option bars for selected contracts
-   uv run dlt-ibapi backfill-options \
-       AAPL \
-       150.0 \
-       --mode atm \
-       --k-strikes 5 \
-       --dte-range 7 90 \
-       --start-date 2024-01-01 \
-       --end-date 2024-12-31 \
-       --bar-size "1 day"
-   ```
+# 3. Backfill equity bars (can run weekly)
+uv run dlt-ibapi backfill-equity AAPL MSFT GOOGL --start-date 2024-01-01
+```
 
-**4. Validate Data Availability**
-   ```python
-   from dlt_ibapi.backtest import BacktestDataValidator, EarningsCalendarLoader
-   from dlt_ibapi.repositories import EquityBarsReader, OptionBarsReader
+**Backfill for Historical Period** (Limited):
+```bash
+# WARNING: Can only backfill for non-expired options
+# For expired options, you need historical snapshots collected before expiration
 
-   # Load earnings events
-   loader = EarningsCalendarLoader()
-   events = loader.load_file("earnings_2024-10-22.txt")
+# What you CAN backfill:
+uv run dlt-ibapi backfill-equity AAPL --start-date 2023-01-01  # ✅ Works anytime
 
-   # Create validator
-   equity_reader = EquityBarsReader("./data", "stocks")
-   option_bars_reader = OptionBarsReader("./data", "options")
+# What you CANNOT backfill:
+# ❌ Option chain snapshots for past dates (if options have expired)
+# ❌ Option bars for expired contracts
 
-   validator = BacktestDataValidator(equity_reader, option_bars_reader)
+# Solution: Start collecting daily data NOW for future backtesting
+```
 
-   # Validate all events
-   report = validator.validate_all(events, requirements)
+### Why Daily Collection Matters
 
-   print(f"Valid events: {report.valid_events}/{report.total_events}")
-   print(f"Invalid events: {report.invalid_events}")
+**IB API Constraint**: Option data for expired contracts is not accessible via the API. This means:
 
-   # Review skip reasons
-   for event_report in report.events_reports:
-       if not event_report.is_valid:
-           print(f"{event_report.symbol}: {event_report.skip_reason}")
+- ✅ **Today**: Can get option chain + prices for contracts expiring in 90 days
+- ❌ **91 days from now**: Cannot retroactively get option chain snapshot for "today"
+- ❌ **After expiration**: Cannot get any historical data for expired contracts
 
-   # Export detailed report
-   validator.export_validation_report(report, "./validation_report.json")
-   ```
+**Implication**: To backtest strategies, you must **collect data before options expire**.
 
-**5. Run Backtest (Only on Validated Events)**
-   - Backtest uses validation to filter events
-   - Only trades on events with sufficient data
-   - Logs comprehensive skip reasons for invalid events
+### Validation Before Backtest
 
-### Working with Option Bars Directly
-
-Since option chain snapshots are not available, use `OptionBarsReader` to query specific contracts:
+Always validate data availability before running a backtest:
 
 ```python
-from dlt_ibapi.repositories import OptionBarsReader
+from dlt_ibapi.backtest import BacktestDataValidator
+from dlt_ibapi.backtest.earnings_loader import EarningsCalendarLoader
+from dlt_ibapi.backtest.data_providers import BacktestDataRequirements
+from dlt_ibapi.repositories import (
+    EquityBarsReader,
+    OptionBarsReader,
+    OptionChainSnapshotReader,
+)
+
+# 1. Load earnings events
+loader = EarningsCalendarLoader()
+events = loader.load_file("earnings_2024-10-22.txt")
+
+# 2. Initialize readers
+equity_reader = EquityBarsReader("./data", "stocks")
+option_bars_reader = OptionBarsReader("./data", "options")
+option_chain_reader = OptionChainSnapshotReader("./data", "option_chains")
+
+# 3. Create validator
+validator = BacktestDataValidator(
+    equity_reader=equity_reader,
+    option_bars_reader=option_bars_reader,
+    option_chain_reader=option_chain_reader,
+)
+
+# 4. Define requirements
+requirements = BacktestDataRequirements(
+    front_month_dte=(14, 21),
+    back_month_dte=(35, 50),
+    min_equity_coverage=0.90,
+    min_option_bars_coverage=0.95,
+)
+
+# 5. Validate
+report = validator.validate_all(events, requirements)
+
+# 6. Review results
+print(f"✓ Valid events: {report.valid_events}/{report.total_events}")
+print(f"✗ Invalid events: {report.invalid_events}")
+
+if report.skip_reasons:
+    print("\nReasons for skipping events:")
+    for reason, count in report.skip_reasons.items():
+        print(f"  - {reason}: {count} events")
+
+if report.invalid_symbols:
+    print("\nSymbols with missing data:")
+    for symbol, reason in report.invalid_symbols.items():
+        print(f"  - {symbol}: {reason}")
+```
+
+### Working with Collected Data
+
+Once you've collected data, query it using the repository classes:
+
+```python
+from dlt_ibapi.repositories import (
+    EquityBarsReader,
+    OptionBarsReader,
+    OptionChainSnapshotReader,
+)
 from datetime import date
 
-reader = OptionBarsReader("./data", "options")
-
-# Example 1: Get bars for specific contract
-bars = reader.get_bars(
+# Equity bars
+equity_reader = EquityBarsReader("./data", "stocks")
+bars = equity_reader.get_bars(
     symbol="AAPL",
+    bar_size="1 day",
+    start_date=date(2024, 1, 1),
+    end_date=date(2024, 12, 31),
+)
+
+# Option bars for specific contract
+option_reader = OptionBarsReader("./data", "options")
+option_bars = option_reader.get_bars(
+    underlying="AAPL",
     strike=150.0,
-    expiration=date(2024, 12, 20),
+    expiry=date(2024, 12, 20),
     right="C",
     bar_size="1 day",
     start_date=date(2024, 11, 1),
     end_date=date(2024, 11, 13),
 )
 
-print(f"Retrieved {len(bars)} bars")
-print(bars[["time", "open", "high", "low", "close", "volume"]])
+# Option chain snapshot
+chain_reader = OptionChainSnapshotReader("./data", "option_chains")
 
-# Example 2: Check if contract has sufficient coverage
-available_dates = reader.get_available_dates(
-    symbol="AAPL",
-    strike=150.0,
-    expiration=date(2024, 12, 20),
-    right="C",
-    bar_size="1 day",
+# Check which dates have snapshots
+available_dates = chain_reader.get_available_snapshots("AAPL")
+print(f"Snapshots available: {len(available_dates)} dates")
+
+# Get expirations available on a specific date
+expirations = chain_reader.get_available_expirations(
+    underlying="AAPL",
+    as_of=date(2024, 10, 22),
+    min_dte=7,
+    max_dte=90,
 )
-
-required_dates = get_trading_days(date(2024, 11, 1), date(2024, 11, 13))
-coverage = len(available_dates) / len(required_dates)
-
-if coverage >= 0.95:
-    print("✓ Sufficient coverage for backtest")
-else:
-    print(f"✗ Insufficient coverage: {coverage:.1%}")
-
-# Example 3: Query multiple contracts (calendar spread)
-front_month = reader.get_bars(
-    symbol="AAPL", strike=150.0, expiration=date(2024, 11, 20),
-    right="C", bar_size="1 day",
-    start_date=date(2024, 11, 1), end_date=date(2024, 11, 13),
-)
-
-back_month = reader.get_bars(
-    symbol="AAPL", strike=150.0, expiration=date(2024, 12, 20),
-    right="C", bar_size="1 day",
-    start_date=date(2024, 11, 1), end_date=date(2024, 11, 13),
-)
-
-# Calculate calendar spread value
-spread_value = back_month["close"] - front_month["close"]
-print(f"Spread P&L: ${spread_value.sum():.2f}")
+print(f"Expirations on 2024-10-22: {expirations}")
 ```
 
-### Key Takeaways
+### Key Principles
 
-1. **You CANNOT backtest** strategies that require:
-   - Historical option chain screening
-   - Expired options data
-   - Historical bid/ask spreads or volume/OI
-
-2. **You CAN backtest** strategies that use:
-   - Deterministic option selection (ATM, DTE rules)
-   - Pre-collected option bars for specific contracts
-   - Earnings events as entry triggers
-
-3. **Data collection must be proactive**:
-   - Collect option bars BEFORE options expire
-   - Use external earnings calendar (Nasdaq)
-   - Validate data availability before backtesting
-
-4. **Use validation system** to:
-   - Check data coverage for each earnings event
-   - Filter invalid events with detailed reasons
-   - Generate JSON reports for debugging
+1. **Proactive Collection**: Start collecting data daily NOW for future backtesting
+2. **Three-Component Model**: Snapshots (metadata) + Option Bars (prices) + Equity Bars (spot)
+3. **Validation First**: Always validate before backtest to know which dates have complete data
+4. **Gap Awareness**: The validation system tells you exactly what's missing and why
+5. **Clear Error Messages**: When data is missing, you get actionable guidance on what to collect
 
 ---
 
@@ -954,21 +890,23 @@ config = IVBasedConfig(
 )
 
 # Create strategy
-strategy = IVBasedCalendarSpreadStrategy(config, earnings_provider)
+strategy = IVBasedCalendarSpreadStrategy(config)
 
-# Create backtest runner
+# Create backtest runner with validation
 runner = OptionsBacktestRunner(
     strategy=strategy,
     data_provider=data_provider,
     option_chain_provider=chain_provider,
     initial_capital=100000,
-    commission_per_contract=0.65,    # $0.65 per contract
+    commission_per_contract=0.65,           # $0.65 per contract
+    earnings_calendar_provider=earnings_provider,  # For validation
 )
 
-# Run backtest
+# Run backtest with pre-flight validation
 result = runner.run(
     start_date=date(2023, 1, 1),
     end_date=date(2024, 12, 31),
+    validate_data=True,  # Pre-flight validation enabled
 )
 
 # Analyze results

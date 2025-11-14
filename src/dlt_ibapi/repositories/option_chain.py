@@ -48,7 +48,7 @@ class OptionChainSnapshotReader(ParquetReaderBase):
 
         Args:
             underlying: Underlying symbol
-            as_of: Snapshot date
+            as_of: Snapshot date (date or pandas Timestamp)
             min_dte: Minimum days to expiration filter
             max_dte: Maximum days to expiration filter
             exchange: Filter by specific exchange (default: use all exchanges)
@@ -59,11 +59,18 @@ class OptionChainSnapshotReader(ParquetReaderBase):
         table_name = self._get_table_name()
         exp_table = f"{table_name}__expirations"
 
+        # Convert pandas Timestamp to date if needed
+        if hasattr(as_of, 'date') and callable(as_of.date):
+            as_of = as_of.date()
+
         where_clauses = [
             "p.underlying = $underlying",
-            "DATE(p.as_of) = $as_of"
+            "p.date = $snapshot_date_str"
         ]
-        params = {"underlying": underlying.upper(), "as_of": as_of}
+        params = {
+            "underlying": underlying.upper(),
+            "snapshot_date_str": as_of.isoformat()
+        }
 
         if exchange:
             where_clauses.append("p.exchange = $exchange")
@@ -71,11 +78,12 @@ class OptionChainSnapshotReader(ParquetReaderBase):
 
         where_sql = " AND ".join(where_clauses)
 
-        # Join with child table for expirations
+        # Join with DLT child table for expirations
         query = f"""
             SELECT DISTINCT e.value as exp_str
             FROM {table_name} p
-            JOIN {exp_table} e ON p._dlt_id = e._dlt_parent_id
+            JOIN {exp_table} e
+                ON p._dlt_id = e._dlt_parent_id
             WHERE {where_sql}
         """
 
@@ -117,7 +125,7 @@ class OptionChainSnapshotReader(ParquetReaderBase):
 
         Args:
             underlying: Underlying symbol
-            as_of: Snapshot date
+            as_of: Snapshot date (date or pandas Timestamp)
             expiry: Expiration date (for compatibility, not used in query)
             exchange: Filter by specific exchange
 
@@ -127,11 +135,18 @@ class OptionChainSnapshotReader(ParquetReaderBase):
         table_name = self._get_table_name()
         strike_table = f"{table_name}__strikes"
 
+        # Convert pandas Timestamp to date if needed
+        if hasattr(as_of, 'date') and callable(as_of.date):
+            as_of = as_of.date()
+
         where_clauses = [
             "p.underlying = $underlying",
-            "DATE(p.as_of) = $as_of"
+            "p.date = $snapshot_date_str"
         ]
-        params = {"underlying": underlying.upper(), "as_of": as_of}
+        params = {
+            "underlying": underlying.upper(),
+            "snapshot_date_str": as_of.isoformat()
+        }
 
         if exchange:
             where_clauses.append("p.exchange = $exchange")
@@ -139,11 +154,12 @@ class OptionChainSnapshotReader(ParquetReaderBase):
 
         where_sql = " AND ".join(where_clauses)
 
-        # Join with child table for strikes
+        # Join with DLT child table for strikes
         query = f"""
             SELECT DISTINCT s.value as strike
             FROM {table_name} p
-            JOIN {strike_table} s ON p._dlt_id = s._dlt_parent_id
+            JOIN {strike_table} s
+                ON p._dlt_id = s._dlt_parent_id
             WHERE {where_sql}
             ORDER BY strike
         """
@@ -180,9 +196,12 @@ class OptionChainSnapshotReader(ParquetReaderBase):
 
         where_clauses = [
             "underlying = $underlying",
-            "DATE(as_of) = $as_of"
+            "date = $snapshot_date_str"
         ]
-        params = {"underlying": underlying.upper(), "as_of": as_of}
+        params = {
+            "underlying": underlying.upper(),
+            "snapshot_date_str": as_of.isoformat()
+        }
 
         if exchange:
             where_clauses.append("exchange = $exchange")
@@ -220,7 +239,10 @@ class OptionChainSnapshotReader(ParquetReaderBase):
         """
 
         df = self._query_with_duckdb(query, {"underlying": underlying.upper()})
-        return set(df["snapshot_date"].tolist()) if not df.empty else set()
+        if df.empty:
+            return set()
+        # Convert pandas Timestamps to dates
+        return {d.date() if hasattr(d, 'date') else d for d in df["snapshot_date"].tolist()}
 
     def get_exchanges_for_snapshot(
         self,
@@ -244,10 +266,13 @@ class OptionChainSnapshotReader(ParquetReaderBase):
             SELECT DISTINCT exchange
             FROM {table_name}
             WHERE underlying = $underlying
-            AND DATE(as_of) = $as_of
+            AND date = $snapshot_date_str
             ORDER BY exchange
         """
 
-        params = {"underlying": underlying.upper(), "as_of": as_of}
+        params = {
+            "underlying": underlying.upper(),
+            "snapshot_date_str": as_of.isoformat()
+        }
         df = self._query_with_duckdb(query, params)
         return df["exchange"].tolist() if not df.empty else []

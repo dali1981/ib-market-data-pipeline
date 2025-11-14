@@ -14,6 +14,7 @@ DLT connector for Interactive Brokers - ingest market data from IB Gateway/TWS i
   - [Orchestration with Dagster](#orchestration-with-dagster)
   - [Backtesting](#backtesting)
 - [Configuration](#configuration)
+- [Dataset Organization](#dataset-organization)
 - [Notebooks](#notebooks)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
@@ -22,8 +23,20 @@ DLT connector for Interactive Brokers - ingest market data from IB Gateway/TWS i
 
 Detailed documentation is available in the `docs/` directory:
 
+**Getting Started:**
 - **[Backfill Guide](docs/BACKFILL_GUIDE.md)** - Complete guide to historical data backfilling with gap detection
-- **[Backtest Quick Start](docs/BACKTEST_QUICKSTART.md)** - Options backtesting guide (⚠️ see IB API limitations)
+- **[Earnings Snapshot Workflow](docs/EARNINGS_SNAPSHOT_WORKFLOW.md)** - Batch snapshot option chains for stocks with earnings
+- **[Earnings Guide](docs/EARNINGS_GUIDE.md)** - Load and query earnings calendar data
+
+**Automation:**
+- **[Automated Calendar Spread Workflow](docs/AUTOMATED_CALENDAR_SPREAD_WORKFLOW.md)** - Complete automated data collection pipeline for calendar spreads
+
+**Backtesting:**
+- **[Calendar Spread Backtest Guide](docs/CALENDAR_SPREAD_BACKTEST_GUIDE.md)** - Complete guide to backtesting earnings calendar spreads
+- **[Backtest Quick Reference](docs/BACKTEST_QUICK_REFERENCE.md)** - Fast reference for running backtests
+- **[Backtest Quick Start](docs/BACKTEST_QUICKSTART.md)** - Options backtesting guide with daily data collection workflow
+
+**Technical:**
 - **[API Reference](docs/API_REFERENCE.md)** - Complete Python API documentation
 - **[Architecture](docs/ARCHITECTURE.md)** - DLT vs Dagster layer separation
 - **[CLI Architecture](docs/CLI_ARCHITECTURE.md)** - CLI refactoring and modular design
@@ -511,17 +524,53 @@ IB API → DLT Ingestion (dlt-ibapi) → Raw Parquet
 - Schedulable: Automated data collection during market hours
 - Monitorable: Track asset materialization and data quality
 
+### Automated Calendar Spread Data Collection
+
+`dlt-ibapi` provides a **fully automated pipeline** for collecting calendar spread backtest data. Perfect for daily cron jobs that handle 300+ earnings symbols with zero manual intervention.
+
+> **📖 See [Automated Calendar Spread Workflow](docs/AUTOMATED_CALENDAR_SPREAD_WORKFLOW.md) for complete documentation**
+
+**What it does (7 automated steps):**
+1. Load earnings symbols for specified date
+2. Resolve contracts (pre-populate cache)
+3. Capture option chain snapshots
+4. Backfill equity bars (for spot prices)
+5. Select front/back leg expirations based on DTE
+6. Backfill option bars (parallel processing)
+7. Validate data completeness
+
+**Quick Start:**
+```bash
+# One-time collection for specific earnings date
+python scripts/collect_calendar_spread_data.py 2025-11-13 --workers 5
+
+# Daily automation (add to cron at 6 PM after market close)
+./scripts/collect_daily.sh
+```
+
+**Features:**
+- Parallel processing: 300+ symbols in ~48 minutes (vs 4 hours sequential)
+- Automatic spot price extraction from equity bars
+- DTE-based expiration selection from snapshots
+- Graceful error handling (skip failed symbols, continue)
+- Detailed logging and JSON summary output
+- Production-ready bash wrapper for cron jobs
+
 ### Backtesting
 
-> **⚠️ CRITICAL WARNING**: The backtest is currently **NON-FUNCTIONAL** due to IB API limitations.
+> **📋 Data Requirements**: The backtest requires **daily-collected data** to function:
 >
-> **📖 See [Backtest Quick Start](docs/BACKTEST_QUICKSTART.md) for complete details** on:
-> - What data IS and IS NOT available from IB API ([official IB API limitations](https://interactivebrokers.github.io/tws-api/historical_limitations.html))
-> - How to use the validation system to check data availability
-> - Required approach using deterministic option selection + pre-collected option bars
-> - Data collection workflow for future backtesting
+> 1. **Option Chain Snapshots** - Daily metadata (strikes, expirations) collected via `dlt-ibapi snapshot`
+> 2. **Option Bars** - OHLCV data for specific contracts collected before expiration
+> 3. **Equity Bars** - Underlying spot prices (can be backfilled anytime)
+>
+> **📖 See [Backtest Quick Start](docs/BACKTEST_QUICKSTART.md) for complete guide** on:
+> - Daily data collection workflow
+> - Pre-flight validation system
+> - Running backtests with auto-filtering of incomplete data
+> - Analyzing results and performance metrics
 
-`dlt-ibapi` includes a **options backtesting framework** for earnings calendar spread strategies (currently under repair - see warning above).
+`dlt-ibapi` includes an **options backtesting framework** for earnings calendar spread strategies with built-in data validation and gap-aware execution.
 
 ### Features
 
@@ -630,11 +679,21 @@ config = IVBasedConfig(
     profit_target=0.30,
 )
 
-strategy = IVBasedCalendarSpreadStrategy(config, earnings_provider)
+strategy = IVBasedCalendarSpreadStrategy(config)
 
-# Run backtest
-runner = OptionsBacktestRunner(strategy, data_provider, chain_provider, 100000)
-result = runner.run(date(2023, 1, 1), date(2024, 12, 31))
+# Run backtest with validation
+runner = OptionsBacktestRunner(
+    strategy=strategy,
+    data_provider=data_provider,
+    option_chain_provider=chain_provider,
+    initial_capital=100000,
+    earnings_calendar_provider=earnings_provider,  # For validation
+)
+result = runner.run(
+    start_date=date(2023, 1, 1),
+    end_date=date(2024, 12, 31),
+    validate_data=True,  # Pre-flight validation
+)
 
 # Analyze results
 print(f"Return: {result.total_return_pct:.2f}%")
@@ -912,6 +971,360 @@ dlt-ibapi --help
 dlt-ibapi init --help
 dlt-ibapi fetch --help
 ```
+
+## Dataset Organization
+
+`dlt-ibapi` organizes data into four primary datasets, each with a specific purpose:
+
+| Dataset | Purpose | CLI Commands | Location |
+|---------|---------|--------------|----------|
+| `stocks` | Equity bars (underlying spot prices) | `backfill-equity` | `./data/stocks/` |
+| `options` | Option bars (OHLCV for specific contracts) | `backfill-options` | `./data/options/` |
+| `option_chains` | Option chain snapshots (contract metadata) | `snapshot`, `list-snapshots` | `./data/option_chains/` |
+| `earnings` | Earnings calendar (announcement dates/times) | `load-earnings`, `list-earnings` | `./data/earnings/` |
+
+### Key Concepts
+
+**Dataset vs Pipeline:**
+- **Dataset**: Logical grouping of related tables (e.g., all equity data goes into `stocks` dataset)
+- **Pipeline**: DLT execution instance with a unique name (e.g., `ib_snapshots`, `my_backfill`)
+- **Directory structure**: `./data/{dataset}/{table}/*.parquet`
+
+**Data Separation:**
+- **`stocks/`** contains spot prices for underlying equities (for backtesting reference prices)
+- **`options/`** contains pricing data (OHLCV) for specific option contracts
+- **`option_chains/`** contains metadata about available contracts (strikes, expirations, DTE) - not prices
+- **`earnings/`** contains earnings calendar data (announcement dates, times, forecasts) for strategy timing
+
+### Example Workflow
+
+```bash
+# 1. Load earnings calendar (from Nasdaq JSON file)
+dlt-ibapi load-earnings /path/to/earnings.json --start-date 2025-11-01
+# → Saves to ./data/earnings/earnings_calendar/
+
+# 2. Capture option chain snapshot (contract metadata)
+dlt-ibapi snapshot AAPL --min-dte 7 --max-dte 60
+# → Saves to ./data/option_chains/option_chain_snapshot/
+
+# 3. Backfill option bars (pricing data for contracts)
+dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
+# → Saves to ./data/options/option_bars/
+
+# 4. Backfill equity bars (underlying spot prices)
+dlt-ibapi backfill-equity AAPL --bar-size "1 day"
+# → Saves to ./data/stocks/historical_bars/
+
+# 5. View statistics for any dataset
+dlt-ibapi stats ./data --dataset stocks
+dlt-ibapi stats ./data --dataset options
+dlt-ibapi stats ./data --dataset option_chains
+dlt-ibapi stats ./data --dataset earnings
+```
+
+### Customizing Dataset Names
+
+All commands accept `--dataset` to override defaults:
+
+```bash
+# Use custom dataset names
+dlt-ibapi backfill-equity AAPL --dataset my_stocks
+dlt-ibapi snapshot AAPL --dataset my_option_chains
+dlt-ibapi backfill-options AAPL 150.0 --dataset my_options
+```
+
+### Why Separate Datasets?
+
+This separation enables:
+1. **Clear data organization**: Spot prices vs option prices vs contract metadata
+2. **Efficient queries**: Filter by dataset without scanning unrelated tables
+3. **Flexible backtesting**: Load only the data types you need
+4. **Modular pipelines**: Run snapshots, equity backfills, and option backfills independently
+
+### File Locations
+
+All data is stored as **Parquet files** in the following structure:
+
+```
+./data/
+├── stocks/                          # Equity bars dataset
+│   ├── historical_bars/             # Table: equity OHLCV data
+│   │   └── *.parquet               # Parquet files with timestamps
+│   ├── _dlt_loads/                  # DLT metadata (load tracking)
+│   │   └── *.jsonl
+│   └── _dlt_pipeline_state/         # Pipeline state
+│       └── *.jsonl
+│
+├── options/                         # Option bars dataset
+│   ├── option_bars/                 # Table: option OHLCV data
+│   │   └── *.parquet
+│   └── _dlt_loads/
+│       └── *.jsonl
+│
+├── option_chains/                   # Option chain snapshots dataset
+│   ├── option_chain_snapshot/       # Table: main snapshot data
+│   │   └── *.parquet
+│   ├── option_chain_snapshot__expirations/  # Table: expiration details
+│   │   └── *.parquet
+│   ├── option_chain_snapshot__strikes/      # Table: strike details
+│   │   └── *.parquet
+│   └── _dlt_loads/
+│       └── *.jsonl
+│
+└── earnings/                        # Earnings calendar dataset
+    ├── earnings_calendar/           # Table: earnings announcements
+    │   └── *.parquet
+    └── _dlt_loads/
+        └── *.jsonl
+```
+
+**With Hive Partitioning (Optional):**
+
+You can enable Hive-style partitioning for better query performance on large datasets:
+
+```
+./data/stocks/historical_bars/
+├── date=2025-01-15/                 # Hive partition by date
+│   ├── symbol=AAPL/                 # Nested partition by symbol
+│   │   └── *.parquet
+│   └── symbol=MSFT/
+│       └── *.parquet
+└── date=2025-01-16/
+    └── ...
+```
+
+**Key Points:**
+- **Parquet format**: Compressed columnar format (~10x smaller than CSV)
+- **Schema evolution**: DLT handles schema changes automatically
+- **DLT metadata**: `_dlt_loads` tracks pipeline runs and data lineage
+- **File naming**: Timestamps in filenames (e.g., `1761044219.827749.eb57dba027.parquet`)
+- **Hive partitioning**: Enable via DLT column hints for large datasets (see API docs)
+
+### Data Discovery
+
+Explore your data using CLI commands:
+
+#### 1. **View Dataset Statistics**
+
+```bash
+# See all tables in a dataset with row counts, date ranges, and symbols
+dlt-ibapi stats ./data --dataset stocks
+
+# Output:
+# historical_bars
+#   Rows: 456
+#   Date range: 2025-09-09 to 2025-10-21
+#   Symbols: AAPL, GOOGL, MSFT
+#   Columns: 16
+```
+
+```bash
+# Analyze specific table
+dlt-ibapi stats ./data --dataset option_chains --table option_chain_snapshot
+
+# Check all datasets
+dlt-ibapi stats ./data --dataset stocks
+dlt-ibapi stats ./data --dataset options
+dlt-ibapi stats ./data --dataset option_chains
+dlt-ibapi stats ./data --dataset earnings
+```
+
+#### 2. **List Available Snapshots**
+
+```bash
+# List all option chain snapshots
+dlt-ibapi list-snapshots
+
+# List snapshots for specific symbol
+dlt-ibapi list-snapshots AAPL
+
+# Use custom dataset location
+dlt-ibapi list-snapshots --data-dir ./data --dataset option_chains
+```
+
+#### 3. **List Upcoming Earnings**
+
+```bash
+# List earnings for next 7 days
+dlt-ibapi list-earnings
+
+# List earnings for next 30 days
+dlt-ibapi list-earnings --days-ahead 30
+
+# Filter by symbols
+dlt-ibapi list-earnings --symbols AAPL MSFT GOOGL
+
+# Filter by earnings time
+dlt-ibapi list-earnings --time PRE_MARKET
+dlt-ibapi list-earnings --time AFTER_HOURS
+
+# Use custom dataset location
+dlt-ibapi list-earnings --data-dir ./data --dataset earnings
+```
+
+#### 4. **Query Data with DuckDB**
+
+Use DuckDB to explore Parquet files directly:
+
+```bash
+# Interactive DuckDB shell
+duckdb
+
+# Query equity bars
+SELECT symbol, date, close, volume
+FROM parquet_scan('./data/stocks/historical_bars/**/*.parquet', hive_partitioning=true)
+WHERE symbol = 'AAPL'
+  AND date >= '2025-01-01'
+ORDER BY date DESC
+LIMIT 10;
+
+# Aggregate statistics
+SELECT
+    symbol,
+    COUNT(*) as bar_count,
+    MIN(date) as first_date,
+    MAX(date) as last_date,
+    AVG(volume) as avg_volume
+FROM parquet_scan('./data/stocks/historical_bars/**/*.parquet', hive_partitioning=true)
+GROUP BY symbol
+ORDER BY symbol;
+
+# Query option chain snapshots
+SELECT
+    underlying,
+    as_of,
+    COUNT(*) as total_contracts
+FROM parquet_scan('./data/option_chains/option_chain_snapshot/**/*.parquet', hive_partitioning=true)
+GROUP BY underlying, as_of
+ORDER BY as_of DESC;
+
+# Query earnings calendar
+SELECT
+    symbol,
+    earnings_date,
+    earnings_time,
+    company_name,
+    eps_forecast
+FROM parquet_scan('./data/earnings/earnings_calendar/**/*.parquet', hive_partitioning=true)
+WHERE earnings_date >= CURRENT_DATE
+  AND earnings_date <= CURRENT_DATE + INTERVAL '30 days'
+ORDER BY earnings_date, symbol;
+
+# Count earnings by time of day
+SELECT
+    earnings_time,
+    COUNT(*) as count
+FROM parquet_scan('./data/earnings/earnings_calendar/**/*.parquet', hive_partitioning=true)
+WHERE earnings_date >= CURRENT_DATE
+GROUP BY earnings_time
+ORDER BY count DESC;
+```
+
+#### 5. **Query Data with Python**
+
+Use the built-in Reader API for type-safe queries:
+
+```python
+from dlt_ibapi.repositories import EquityBarsReader
+from datetime import date
+
+# Initialize reader
+reader = EquityBarsReader(database_path="./data", dataset_name="stocks")
+
+# Get bars for a symbol
+df = reader.get_bars(
+    symbol="AAPL",
+    bar_size="1 day",
+    start_date=date(2025, 1, 1),
+    end_date=date(2025, 10, 20)
+)
+print(df.head())
+
+# Get available symbols
+symbols = reader.get_available_symbols(bar_size="1 day")
+print(f"Available symbols: {symbols}")
+
+# Get date range for a symbol
+min_date, max_date = reader.get_date_range("AAPL", "1 day")
+print(f"AAPL data from {min_date} to {max_date}")
+```
+
+```python
+from dlt_ibapi.repositories import OptionChainSnapshotReader
+from datetime import date
+
+# Query option chain snapshots
+reader = OptionChainSnapshotReader(database_path="./data", dataset_name="option_chains")
+
+# Get chain for specific date
+chain = reader.get_chain_for_date(
+    underlying="AAPL",
+    as_of_date=date(2025, 11, 13),
+    min_dte=7,
+    max_dte=60
+)
+print(chain)
+
+# List available snapshots
+snapshots = reader.get_available_snapshots("AAPL")
+print(f"AAPL snapshots: {snapshots}")
+```
+
+```python
+from dlt_ibapi.repositories import EarningsCalendarReader
+from datetime import date
+
+# Query earnings calendar
+reader = EarningsCalendarReader(database_path="./data", dataset_name="earnings")
+
+# Get upcoming earnings
+upcoming = reader.get_upcoming_earnings(
+    days_ahead=30,
+    symbols=["AAPL", "MSFT", "GOOGL"]
+)
+print(upcoming[['symbol', 'earnings_date', 'earnings_time', 'company_name']])
+
+# Get all earnings for a symbol
+aapl_earnings = reader.get_earnings_for_symbol(
+    symbol="AAPL",
+    start_date=date(2025, 1, 1),
+    end_date=date(2025, 12, 31)
+)
+print(f"AAPL has {len(aapl_earnings)} earnings in 2025")
+
+# Check if specific date has earnings
+earnings_today = reader.get_earnings_on_date(date.today())
+print(f"{len(earnings_today)} companies reporting earnings today")
+
+# Get available symbols
+symbols = reader.get_available_symbols()
+print(f"Earnings data for {len(symbols)} symbols")
+```
+
+#### 6. **Explore File System**
+
+```bash
+# List all datasets
+ls -la ./data/
+
+# See Hive partitions for equity bars
+find ./data/stocks/historical_bars -type d | head -20
+
+# Count Parquet files
+find ./data -name "*.parquet" | wc -l
+
+# Check file sizes by dataset
+du -sh ./data/stocks ./data/options ./data/option_chains
+
+# View DLT metadata (load history)
+cat ./data/stocks/_dlt_loads/*.jsonl | jq '.'
+```
+
+**Pro Tips:**
+- Use `hive_partitioning=true` in DuckDB queries for partition pruning
+- Reader API handles Hive partitioning automatically
+- Stats command is the fastest way to see what data exists
+- Parquet files are compressed (~10x smaller than CSV)
 
 ## API Reference
 

@@ -15,8 +15,10 @@ from dlt_ibapi.resolution import ContractCache, ContractResolver
 from dlt_ibapi.backfill.config import OptionChainSnapshotConfig, OptionBackfillConfig
 from dlt_ibapi.backfill.gap_detection import missing_windows
 from dlt_ibapi.backfill.contract_selection import filter_contracts_by_selection_mode
+from dlt_ibapi.backfill.download_planner import DownloadPlanner
 from dlt_ibapi.repositories import OptionChainSnapshotReader, OptionBarsReader, EquityBarsReader
 from dlt_ibapi.transformers import normalize_bar_data
+from dlt_ibapi.utils.logging import get_logger
 from ib_connector import make_stock
 
 
@@ -30,11 +32,10 @@ def _get_runtime(config: Optional[IBConnectionConfig] = None) -> IBRuntime:
 
 @dlt.resource(
     name="option_chain_snapshot",
-    write_disposition="replace",  # Replace snapshots for same date
+    write_disposition="append",  # Append mode for Parquet (merge doesn't work with filesystem dest)
     primary_key=["underlying", "as_of", "exchange", "trading_class"],
     columns={
-        "date": {"partition": True},  # Partition column for Hive partitioning
-        "underlying": {"partition": True},  # Secondary partition
+        "date": {"partition": True},  # Partition by snapshot date
     }
 )
 def snapshot_option_chain(
@@ -51,8 +52,11 @@ def snapshot_option_chain(
     Fetches option chain parameters (expirations, strikes, multiplier, etc.)
     and stores as aggregated snapshot for a specific date.
 
-    Write disposition: replace (overwrites existing snapshot for same date)
+    Write disposition: append (primary key prevents duplicates on query)
     Primary key: [underlying, as_of, exchange, trading_class]
+
+    Note: Duplicates are handled at query time using DISTINCT or GROUP BY.
+    For true upsert behavior, use Delta Lake format (--delta flag).
 
     Args:
         underlying: Underlying symbol (e.g., "AAPL")
@@ -65,8 +69,7 @@ def snapshot_option_chain(
     Yields:
         Option chain snapshot records
     """
-    import logging
-    log = logging.getLogger("dlt_ibapi.snapshot_option_chain")
+    log = get_logger("dlt_ibapi.snapshot_option_chain")
 
     runtime = _get_runtime(connection_config)
     cache = ContractCache(cache_path)
@@ -200,8 +203,7 @@ def option_chain_snapshots_source(
     write_disposition="append",
     primary_key=["underlying", "expiry", "strike", "right", "bar_size", "time"],
     columns={
-        "date": {"partition": True},  # Partition column for Hive partitioning
-        "symbol": {"partition": True},  # Secondary partition (symbol = underlying for options)
+        "underlying": {"partition": True},  # Partition by underlying symbol only (optimal for Delta Lake)
     }
 )
 def backfill_option_bars(
@@ -238,8 +240,7 @@ def backfill_option_bars(
     Yields:
         Normalized option bar records
     """
-    import logging
-    log = logging.getLogger("dlt_ibapi.backfill_option_bars")
+    log = get_logger("dlt_ibapi.backfill_option_bars")
 
     # Default config
     if backfill_config is None:
@@ -253,7 +254,8 @@ def backfill_option_bars(
     resolver = ContractResolver(runtime, cache)
 
     # Readers for gap detection
-    chain_reader = OptionChainSnapshotReader(database_path, dataset_name)
+    # Note: Snapshots are in 'option_chains' dataset, bars in 'options' dataset
+    chain_reader = OptionChainSnapshotReader(database_path, 'option_chains')
     bars_reader = OptionBarsReader(database_path, dataset_name)
 
     try:
@@ -279,6 +281,32 @@ def backfill_option_bars(
         if chain.empty:
             log.warning(f"No option chain data found for {underlying}")
             return
+
+        # Populate expirations and strikes from child tables
+        # (DLT stores these in separate tables, but filter_contracts_by_selection_mode expects arrays)
+        expirations = chain_reader.get_available_expirations(
+            underlying=underlying,
+            as_of=latest_snapshot_date,
+            min_dte=backfill_config.min_dte,
+            max_dte=backfill_config.max_dte,
+        )
+        if not expirations:
+            log.warning(f"No expirations found in DTE range [{backfill_config.min_dte}, {backfill_config.max_dte}]")
+            return
+
+        # Get strikes (same for all expirations in IB option chains)
+        strikes = chain_reader.get_strikes_for_expiry(
+            underlying=underlying,
+            as_of=latest_snapshot_date,
+            expiry=expirations[0],  # Strikes are shared across expirations
+        )
+
+        # Add arrays to first row (filter_contracts expects this schema)
+        # Create columns first before setting values
+        chain["expirations"] = None
+        chain["strikes"] = None
+        chain.at[chain.index[0], "expirations"] = [exp.strftime("%Y%m%d") for exp in expirations]
+        chain.at[chain.index[0], "strikes"] = strikes
 
         # Step 2: Select contracts based on mode
         log.info(f"Selecting contracts using mode: {backfill_config.selection_mode}")
@@ -311,7 +339,7 @@ def backfill_option_bars(
                 log.info(f"Skipping expired contract (expiry={expiry})")
                 continue
 
-            # Gap detection: find missing dates
+            # Create download plan: find missing dates and batch optimally
             present_dates = bars_reader.get_present_dates_for_contract(
                 underlying=underlying,
                 expiry=expiry,
@@ -322,37 +350,81 @@ def backfill_option_bars(
                 end_date=min(backfill_config.end_date, expiry),
             )
 
-            gaps = missing_windows(
-                present_dates=present_dates,
-                start=backfill_config.start_date,
-                end=min(backfill_config.end_date, expiry),
+            # Use DownloadPlanner for intelligent batching
+            planner = DownloadPlanner(exchange="SMART", bar_size=backfill_config.bar_size)
+            plan = planner.create_plan(
+                start_date=backfill_config.start_date,
+                end_date=min(backfill_config.end_date, expiry),
+                existing_dates=present_dates if present_dates else None,
             )
 
-            if not gaps:
-                log.info(f"No gaps found, data complete")
+            if not plan.batches:
+                log.info(f"No data needed, already complete")
                 continue
 
-            log.info(f"Found {len(gaps)} gaps to fill")
+            log.info(
+                f"Download plan: {plan.total_trading_days} trading days "
+                f"in {plan.api_calls_required} API calls"
+            )
 
-            # Fetch bars for each gap
-            for gap_start, gap_end in gaps:
-                log.info(f"Fetching bars for gap: {gap_start} to {gap_end}")
-
-                # Create option contract
-                contract = make_option(
+            # Resolve contract (uses cache if available)
+            try:
+                resolved = resolver.resolve_option_contract(
                     symbol=underlying,
                     expiry=expiry.strftime("%Y%m%d"),
                     strike=strike,
                     right=right,
                     exchange="SMART",
+                    currency="USD",
+                    use_cache=True,
+                    save_to_cache=True,
                 )
+                log.info(f"Resolved contract: conid={resolved['conid']}, local_symbol={resolved.get('local_symbol')}")
+            except Exception as e:
+                log.error(f"Failed to resolve contract {underlying} {expiry} {strike}{right}: {e}")
+                log.warning(f"Skipping contract due to resolution failure")
+                continue
+
+            # Fetch bars for each batch
+            for batch_start, batch_end in plan.batches:
+                log.info(f"Fetching bars for batch: {batch_start} to {batch_end}")
+
+                # Create option contract using resolved details
+                contract = make_option(
+                    symbol=underlying,
+                    last_trade_date=expiry.strftime("%Y%m%d"),
+                    strike=strike,
+                    right=right,
+                    exch=resolved.get("exchange", "SMART"),
+                )
+                # Set additional fields from resolved contract
+                if resolved.get("trading_class"):
+                    contract.tradingClass = resolved["trading_class"]
+                if resolved.get("local_symbol"):
+                    contract.localSymbol = resolved["local_symbol"]
+                if resolved.get("conid"):
+                    contract.conId = resolved["conid"]
+
+                # Calculate duration for this batch
+                days_span = (batch_end - batch_start).days + 1
+                if days_span <= 30:
+                    duration_str = f"{days_span} D"
+                elif days_span <= 365:
+                    if days_span >= 300:
+                        duration_str = "1 Y"
+                    else:
+                        months = max(1, days_span // 30)
+                        duration_str = f"{months} M"
+                else:
+                    years = max(1, days_span // 365)
+                    duration_str = f"{years} Y"
 
                 # Fetch historical bars
                 try:
                     bars = hist_svc.bars(
                         contract=contract,
-                        endDateTime=gap_end.strftime("%Y%m%d 23:59:59"),
-                        durationStr=f"{(gap_end - gap_start).days + 1} D",
+                        endDateTime=batch_end.strftime("%Y%m%d 23:59:59"),
+                        durationStr=duration_str,
                         barSizeSetting=backfill_config.bar_size,
                         whatToShow=backfill_config.what_to_show,
                         useRTH=1 if backfill_config.use_rth else 0,
@@ -374,10 +446,10 @@ def backfill_option_bars(
                         yield record
                         bar_count += 1
 
-                    log.info(f"Yielded {bar_count} bars for gap {gap_start} to {gap_end}")
+                    log.info(f"Yielded {bar_count} bars for batch {batch_start} to {batch_end}")
 
                 except Exception as e:
-                    log.error(f"Failed to fetch bars for {gap_start} to {gap_end}: {e}")
+                    log.error(f"Failed to fetch bars for {batch_start} to {batch_end}: {e}")
                     continue
 
     finally:
@@ -427,8 +499,7 @@ def option_bars_backfill_source(
     write_disposition="append",
     primary_key=["symbol", "bar_size", "time"],
     columns={
-        "date": {"partition": True},  # Partition column for Hive partitioning
-        "symbol": {"partition": True},  # Secondary partition
+        "symbol": {"partition": True},  # Partition by symbol only (optimal for Delta Lake)
     }
 )
 def backfill_equity_bars(
@@ -470,8 +541,7 @@ def backfill_equity_bars(
     Yields:
         Normalized equity bar records
     """
-    import logging
-    log = logging.getLogger("dlt_ibapi.backfill_equity_bars")
+    log = get_logger("dlt_ibapi.backfill_equity_bars")
 
     # Default date range
     if start_date is None:
@@ -502,8 +572,8 @@ def backfill_equity_bars(
 
         log.info(f"Resolved {symbol} to conid={contract_info['conid']}")
 
-        # Step 2: Gap detection - find missing dates
-        log.info(f"Checking coverage for {symbol} from {start_date} to {end_date}")
+        # Step 2: Create download plan - optimized batching with IB API limits
+        log.info(f"Creating download plan for {symbol} from {start_date} to {end_date}")
 
         present_dates = bars_reader.get_present_dates_for_symbol(
             symbol=symbol,
@@ -512,37 +582,61 @@ def backfill_equity_bars(
             end_date=end_date,
         )
 
-        gaps = missing_windows(
-            present_dates=present_dates,
-            start=start_date,
-            end=end_date,
-            exchange="NYSE",  # Use NYSE calendar for US equities
+        # Use DownloadPlanner for intelligent batching
+        planner = DownloadPlanner(exchange="NYSE", bar_size=bar_size)
+        plan = planner.create_plan(
+            start_date=start_date,
+            end_date=end_date,
+            existing_dates=present_dates if present_dates else None,
         )
 
-        if not gaps:
-            log.info(f"No gaps found for {symbol}, data complete")
+        if not plan.batches:
+            log.info(f"No data needed for {symbol}, already complete")
             return
 
-        log.info(f"Found {len(gaps)} gaps to fill for {symbol}")
+        log.info(
+            f"Download plan for {symbol}: {plan.total_trading_days} trading days "
+            f"in {plan.api_calls_required} API calls ({plan.strategy})"
+        )
 
-        # Step 3: Fetch bars for each gap
+        # Step 3: Fetch bars for each batch
         hist_svc = HistoricalService(runtime)
 
-        for gap_idx, (gap_start, gap_end) in enumerate(gaps, 1):
+        for batch_idx, (batch_start, batch_end) in enumerate(plan.batches, 1):
             log.info(
-                f"[Gap {gap_idx}/{len(gaps)}] Fetching {symbol} bars "
-                f"from {gap_start} to {gap_end}"
+                f"[Batch {batch_idx}/{plan.api_calls_required}] Fetching {symbol} bars "
+                f"from {batch_start} to {batch_end}"
             )
 
             # Create stock contract
             contract = make_stock(symbol, exch="SMART", curr="USD")
 
+            # Calculate duration for this batch
+            days_span = (batch_end - batch_start).days + 1
+
+            # Use IB API duration string from planner's limit
+            # For most cases, we can use days directly, but respect the limit format
+            if days_span <= 30:
+                duration_str = f"{days_span} D"
+            elif days_span <= 365:
+                # Use months or year format for better efficiency
+                if days_span >= 300:
+                    duration_str = "1 Y"
+                else:
+                    # Approximate months
+                    months = max(1, days_span // 30)
+                    duration_str = f"{months} M"
+            else:
+                # Multi-year (shouldn't happen for daily bars with our batching)
+                years = max(1, days_span // 365)
+                duration_str = f"{years} Y"
+
             # Fetch historical bars
             try:
                 bars = hist_svc.bars(
                     contract=contract,
-                    endDateTime=gap_end.strftime("%Y%m%d 23:59:59"),
-                    durationStr=f"{(gap_end - gap_start).days + 1} D",
+                    endDateTime=batch_end.strftime("%Y%m%d 23:59:59"),
+                    durationStr=duration_str,
                     barSizeSetting=bar_size,
                     whatToShow=what_to_show,
                     useRTH=1 if use_rth else 0,
@@ -562,11 +656,11 @@ def backfill_equity_bars(
 
                 if bar_count == 0:
                     log.warning(
-                        f"No bars returned for {gap_start} to {gap_end} "
+                        f"No bars returned for {batch_start} to {batch_end} "
                         f"(market may have been closed - holiday or no trading)"
                     )
                 else:
-                    log.info(f"Yielded {bar_count} bars for gap {gap_start} to {gap_end}")
+                    log.info(f"Yielded {bar_count} bars for batch {batch_start} to {batch_end}")
 
             except Exception as e:
                 # IB errors come as exceptions with error codes
@@ -580,14 +674,14 @@ def backfill_equity_bars(
                     if len(parts) >= 2:
                         code = parts[1].strip().split()[0]
                         log.warning(
-                            f"IB API returned error {code} for {gap_start} to {gap_end}. "
-                            f"Gap may contain non-trading days (holidays/weekends). "
+                            f"IB API returned error {code} for {batch_start} to {batch_end}. "
+                            f"Batch may contain non-trading days (holidays/weekends). "
                             f"Full error: {error_str}"
                         )
                     else:
-                        log.error(f"IB error for {gap_start} to {gap_end}: {error_str}")
+                        log.error(f"IB error for {batch_start} to {batch_end}: {error_str}")
                 else:
-                    log.error(f"Failed to fetch bars for {gap_start} to {gap_end}: {error_str}")
+                    log.error(f"Failed to fetch bars for {batch_start} to {batch_end}: {error_str}")
                 continue
 
     finally:
@@ -672,8 +766,7 @@ def resolve_contracts_resource(
     Yields:
         Contract description and detail records
     """
-    import logging
-    log = logging.getLogger("dlt_ibapi.resolve_contracts")
+    log = get_logger("dlt_ibapi.resolve_contracts")
 
     runtime = _get_runtime(connection_config)
     cache = ContractCache(cache_path)
@@ -773,9 +866,7 @@ def select_option_contracts_resource(
     Yields:
         Selected option contract records with resolution details
     """
-    import logging
-
-    log = logging.getLogger("dlt_ibapi.select_option_contracts")
+    log = get_logger("dlt_ibapi.select_option_contracts")
 
     # Default strategies and deltas
     if strategies is None:

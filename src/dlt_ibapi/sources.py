@@ -31,6 +31,7 @@ from .transformers import (
     normalize_contract_details,
     normalize_option_params,
 )
+from .utils.logging import get_logger
 
 
 def _get_runtime(config: Optional[IBConnectionConfig] = None) -> IBRuntime:
@@ -79,8 +80,7 @@ def ib_historical_bars(
     Yields:
         Normalized bar data records
     """
-    import logging
-    log = logging.getLogger("dlt_ibapi.historical_bars")
+    log = get_logger("dlt_ibapi.historical_bars")
 
     runtime = _get_runtime(connection_config)
     hist_cfg = hist_config if hist_config is not None else get_historical_config()

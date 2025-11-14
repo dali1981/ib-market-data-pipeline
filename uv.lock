@@ -635,6 +635,48 @@ wheels = [
 ]
 
 [[package]]
+name = "delta-lake-storage"
+version = "0.1.0"
+source = { directory = "../delta-lake-storage" }
+dependencies = [
+    { name = "dlt", extra = ["deltalake", "s3"] },
+    { name = "duckdb" },
+    { name = "omegaconf" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dlt", extras = ["deltalake", "s3"], specifier = ">=1.17.1" },
+    { name = "duckdb", specifier = ">=1.4.1" },
+    { name = "omegaconf", specifier = ">=2.3.0" },
+    { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pyarrow", specifier = ">=17.0.0" },
+    { name = "pydantic", specifier = ">=2.12.3" },
+    { name = "pydantic-settings", specifier = ">=2.11.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4.2" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.0.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
+    { name = "structlog", specifier = ">=24.0.0" },
+]
+provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pytest-cov", specifier = ">=4.0.0" },
+    { name = "ruff", specifier = ">=0.1.0" },
+]
+
+[[package]]
 name = "deltalake"
 version = "1.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -703,6 +745,10 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+deltalake = [
+    { name = "deltalake" },
+    { name = "pyarrow" },
+]
 duckdb = [
     { name = "duckdb" },
 ]
@@ -713,12 +759,17 @@ filesystem = [
 parquet = [
     { name = "pyarrow" },
 ]
+s3 = [
+    { name = "botocore" },
+    { name = "s3fs" },
+]
 
 [[package]]
 name = "dlt-ibapi"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "delta-lake-storage" },
     { name = "dlt", extra = ["duckdb", "filesystem", "parquet"] },
     { name = "ib-connector" },
     { name = "matplotlib" },
@@ -730,6 +781,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "rich" },
     { name = "scipy" },
+    { name = "structlog" },
     { name = "tools" },
     { name = "typer" },
 ]
@@ -748,6 +800,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "delta-lake-storage", directory = "../delta-lake-storage" },
     { name = "dlt", extras = ["filesystem", "parquet", "duckdb"], specifier = ">=0.4.0" },
     { name = "ib-connector", editable = "../ib-connector" },
     { name = "matplotlib", specifier = ">=3.10.7" },
@@ -762,6 +815,7 @@ requires-dist = [
     { name = "rich", specifier = ">=14.2.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "scipy", specifier = ">=1.15.3" },
+    { name = "structlog", specifier = ">=25.5.0" },
     { name = "tools", editable = "../tools" },
     { name = "typer", specifier = ">=0.19.2" },
 ]
@@ -2605,6 +2659,20 @@ wheels = [
 ]
 
 [[package]]
+name = "pydantic-settings"
+version = "2.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/43/4b/ac7e0aae12027748076d72a8764ff1c9d82ca75a7a52622e67ed3f765c54/pydantic_settings-2.12.0.tar.gz", hash = "sha256:005538ef951e3c2a68e1c08b292b5f2e71490def8589d4221b95dab00dafcfd0", size = 194184, upload-time = "2025-11-10T14:25:47.013Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/60/5d4751ba3f4a40a6891f24eec885f51afd78d208498268c734e256fb13c4/pydantic_settings-2.12.0-py3-none-any.whl", hash = "sha256:fddb9fd99a5b18da837b29710391e945b1e30c135477f484084ee513adb93809", size = 51880, upload-time = "2025-11-10T14:25:45.546Z" },
+]
+
+[[package]]
 name = "pygments"
 version = "2.19.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3320,6 +3388,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/28/e3/55dcc2cfbc3ca9c29519eb6884dd1415ecb53b0e934862d3559ddcb7e20b/stack_data-0.6.3.tar.gz", hash = "sha256:836a778de4fec4dcd1dcd89ed8abff8a221f58308462e1c4aa2a3cf30148f0b9", size = 44707, upload-time = "2023-09-30T13:58:05.479Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/7b/ce1eafaf1a76852e2ec9b22edecf1daa58175c090266e9f6c64afcd81d91/stack_data-0.6.3-py3-none-any.whl", hash = "sha256:d5558e0c25a4cb0853cddad3d77da9891a08cb85dd9f9f91b9f8cd66e511e695", size = 24521, upload-time = "2023-09-30T13:58:03.53Z" },
+]
+
+[[package]]
+name = "structlog"
+version = "25.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/52/9ba0f43b686e7f3ddfeaa78ac3af750292662284b3661e91ad5494f21dbc/structlog-25.5.0.tar.gz", hash = "sha256:098522a3bebed9153d4570c6d0288abf80a031dfdb2048d59a49e9dc2190fc98", size = 1460830, upload-time = "2025-10-27T08:28:23.028Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/45/a132b9074aa18e799b891b91ad72133c98d8042c70f6240e4c5f9dabee2f/structlog-25.5.0-py3-none-any.whl", hash = "sha256:a8453e9b9e636ec59bd9e79bbd4a72f025981b3ba0f5837aebf48f02f37a7f9f", size = 72510, upload-time = "2025-10-27T08:28:21.535Z" },
 ]
 
 [[package]]

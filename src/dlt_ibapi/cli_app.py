@@ -28,12 +28,54 @@ from .sources import ib_historical_bars, ib_contract_details
 from datetime import date, datetime, timedelta
 import dlt
 
+# Import structlog configuration
+from .utils.structlog_config import configure_structlog
+
 app = typer.Typer(
     name="dlt-ibapi",
     help="CLI for Interactive Brokers DLT connector",
     add_completion=False,
 )
 console = Console()
+
+
+@app.callback()
+def global_options(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable DEBUG level logging",
+    ),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Only show WARNING and ERROR logs",
+    ),
+    json_logs: bool = typer.Option(
+        False,
+        "--json-logs",
+        help="Output logs in JSON format",
+    ),
+    log_file: Optional[str] = typer.Option(
+        None,
+        "--log-file",
+        help="Write logs to file with rotation (10MB max, 5 backups)",
+    ),
+):
+    """
+    Global options for all CLI commands.
+
+    These options control logging behavior across all commands.
+    """
+    # Configure structlog with the provided options
+    configure_structlog(
+        verbose=verbose,
+        quiet=quiet,
+        json_logs=json_logs,
+        log_file=log_file,
+    )
 
 
 @app.command()
@@ -312,6 +354,12 @@ def snapshot(
     config_file: Optional[Path] = typer.Option(
         None, "--config", "-c", help="Path to config file"
     ),
+    log_file: Optional[Path] = typer.Option(
+        None, "--log-file", help="Write logs to file (auto-rotates at 10MB)"
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose (DEBUG) logging"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress INFO logs"),
+    use_delta: bool = typer.Option(False, "--delta", help="Use Delta Lake format (ACID transactions, time travel)"),
 ):
     """
     Capture option chain snapshot for a symbol or batch snapshot for earnings date.
@@ -372,6 +420,7 @@ def snapshot(
                 max_dte=max_dte,
                 pipeline_name=pipeline_name,
                 dataset_name=dataset,
+                use_delta=use_delta,
             )
 
             # Execute snapshot
@@ -441,6 +490,7 @@ def snapshot(
                 pipeline_name=pipeline_name,
                 dataset_name=dataset,
                 earnings_dataset_name=earnings_dataset,
+                use_delta=use_delta,
             )
 
             # Define progress callback for live updates
@@ -516,8 +566,17 @@ def snapshot(
 
 @app.command()
 def backfill_options(
-    symbol: str = typer.Argument(..., help="Underlying symbol (e.g., AAPL)"),
-    spot_price: float = typer.Argument(..., help="Current spot price"),
+    symbol: Optional[str] = typer.Argument(None, help="Underlying symbol (e.g., AAPL) or use --earnings-date"),
+    spot_price: Optional[float] = typer.Argument(None, help="Current spot price (or auto-extract with --earnings-date)"),
+    earnings_date: Optional[str] = typer.Option(
+        None, "--earnings-date", help="Earnings date to backfill all symbols (YYYY-MM-DD, mutually exclusive with symbol)"
+    ),
+    k_expirations: Optional[int] = typer.Option(
+        None, "--k-expirations", help="Limit to k closest expirations beyond earnings date (only with --earnings-date)"
+    ),
+    snapshot_date: Optional[str] = typer.Option(
+        None, "--snapshot-date", help="Snapshot date to read expirations from (defaults to earnings-date)"
+    ),
     start: Optional[str] = typer.Option(
         None, "--start", help="Start date (YYYY-MM-DD, default: 30 days ago)"
     ),
@@ -527,10 +586,13 @@ def backfill_options(
     bar_size: str = typer.Option("1 day", "--bar-size", "-b", help="Bar size"),
     mode: str = typer.Option("atm", "--mode", "-m", help="Selection mode: atm, moneyness, delta, all"),
     k_strikes: int = typer.Option(5, "--k-strikes", "-k", help="K strikes for ATM mode"),
-    min_dte: int = typer.Option(7, "--min-dte", help="Minimum days to expiration"),
-    max_dte: int = typer.Option(60, "--max-dte", help="Maximum days to expiration"),
+    min_dte: int = typer.Option(7, "--min-dte", help="Minimum days to expiration (not used in earnings mode)"),
+    max_dte: int = typer.Option(60, "--max-dte", help="Maximum days to expiration (not used in earnings mode)"),
     pipeline_name: str = typer.Option("ib_options", "--pipeline-name", "--pipeline", help="Pipeline name"),
     dataset: str = typer.Option("options", "--dataset", help="Dataset name"),
+    earnings_dataset: str = typer.Option("earnings", "--earnings-dataset", help="Earnings dataset name"),
+    option_chains_dataset: str = typer.Option("option_chains", "--option-chains-dataset", help="Option chains dataset name"),
+    stocks_dataset: str = typer.Option("stocks", "--stocks-dataset", help="Stocks dataset name (for spot price extraction)"),
     database: Optional[str] = typer.Option(None, "--database", "--db", help="[Deprecated] Use --pipeline-name instead"),
     config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
     # New options
@@ -539,27 +601,44 @@ def backfill_options(
     log_file: Optional[Path] = typer.Option(None, "--log-file", help="Write logs to file with rotation"),
     json_logs: bool = typer.Option(False, "--json-logs", help="Output structured JSON logs"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without doing it"),
+    client_id: Optional[int] = typer.Option(None, "--client-id", help="IB Gateway client ID (overrides config default)"),
+    use_delta: bool = typer.Option(False, "--delta", help="Use Delta Lake format (ACID transactions, time travel)"),
 ):
     """
     Backfill option bars with gap detection.
 
-    Example:
+    Two modes:
+    1. Single symbol: dlt-ibapi backfill-options AAPL 150.0 --mode atm
+    2. Earnings batch: dlt-ibapi backfill-options --earnings-date 2025-11-13 (auto spot prices, all expirations)
+
+    Examples:
         dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
+        dlt-ibapi backfill-options --earnings-date 2025-11-13 --start 2025-01-01 --end 2025-11-13 --k-expirations 6
         dlt-ibapi backfill-options AAPL 150.0 --pipeline-name my_options --verbose
-        dlt-ibapi backfill-options AAPL 150.0 --dry-run
     """
-    from .utils.logging import setup_logging
     from .cli import BackfillOptionsParams, execute_backfill_options
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
-    # Setup logging
-    setup_logging(
-        level="INFO",
-        log_file=log_file,
-        verbose=verbose,
-        quiet=quiet or dry_run,
-        json_logs=json_logs,
-    )
+    # Validate mutual exclusivity
+    if symbol and earnings_date:
+        console.print("[red]Error: Cannot specify both symbol and --earnings-date. Use one or the other.[/red]")
+        raise typer.Exit(1)
+    if not symbol and not earnings_date:
+        console.print("[red]Error: Must specify either symbol or --earnings-date.[/red]")
+        raise typer.Exit(1)
+
+    # Validate single symbol mode requirements
+    if symbol and spot_price is None:
+        console.print("[red]Error: spot_price is required when using symbol (single mode).[/red]")
+        raise typer.Exit(1)
+
+    # Validate earnings mode restrictions
+    if earnings_date and spot_price is not None:
+        console.print("[red]Error: spot_price should not be specified with --earnings-date (auto-extracted).[/red]")
+        raise typer.Exit(1)
+
+    if k_expirations and not earnings_date:
+        console.print("[yellow]Warning: --k-expirations only applies with --earnings-date. Ignoring.[/yellow]")
 
     # Handle legacy --database argument
     if database:
@@ -569,6 +648,8 @@ def backfill_options(
     # Parse dates
     start_date = datetime.strptime(start, "%Y-%m-%d").date() if start else date.today() - timedelta(days=30)
     end_date = datetime.strptime(end, "%Y-%m-%d").date() if end else date.today()
+    earnings_date_parsed = datetime.strptime(earnings_date, "%Y-%m-%d").date() if earnings_date else None
+    snapshot_date_parsed = datetime.strptime(snapshot_date, "%Y-%m-%d").date() if snapshot_date else None
 
     # Validate selection mode
     valid_modes = ["atm", "moneyness", "delta", "all"]
@@ -577,17 +658,25 @@ def backfill_options(
         raise typer.Exit(1)
 
     # Display plan
-    console.print(f"\n[bold cyan]{'DRY RUN: ' if dry_run else ''}Backfilling option bars for {symbol}[/bold cyan]\n")
+    mode_desc = f"earnings on {earnings_date_parsed}" if earnings_date_parsed else symbol
+    console.print(f"\n[bold cyan]{'DRY RUN: ' if dry_run else ''}Backfilling option bars for {mode_desc}[/bold cyan]\n")
 
     table = Table(show_header=False, box=None)
     table.add_column("Key", style="cyan")
     table.add_column("Value", style="white")
-    table.add_row("Underlying", f"{symbol} @ ${spot_price}")
+    if earnings_date_parsed:
+        table.add_row("Mode", "Earnings Batch")
+        table.add_row("Earnings Date", str(earnings_date_parsed))
+        table.add_row("Spot Prices", "Auto-extracted from equity bars")
+        table.add_row("Expirations", f"All beyond earnings{f' (limit: {k_expirations})' if k_expirations else ''}")
+    else:
+        table.add_row("Mode", "Single Symbol")
+        table.add_row("Underlying", f"{symbol} @ ${spot_price}")
+        table.add_row("DTE Range", f"{min_dte} to {max_dte}")
     table.add_row("Date Range", f"{start_date} to {end_date}")
     table.add_row("Bar Size", bar_size)
     table.add_row("Selection Mode", mode)
     table.add_row("K Strikes", str(k_strikes) if mode == "atm" else "N/A")
-    table.add_row("DTE Range", f"{min_dte} to {max_dte}")
     table.add_row("Pipeline", pipeline_name)
     table.add_row("Dataset", dataset)
     console.print(table)
@@ -596,14 +685,20 @@ def backfill_options(
     # Dry run mode
     if dry_run:
         console.print("[yellow]DRY RUN MODE - No data will be fetched[/yellow]")
-        console.print(f"[yellow]Would backfill {symbol} options from {start_date} to {end_date}[/yellow]")
+        if earnings_date_parsed:
+            console.print(f"[yellow]Would backfill earnings symbols options from {start_date} to {end_date}[/yellow]")
+        else:
+            console.print(f"[yellow]Would backfill {symbol} options from {start_date} to {end_date}[/yellow]")
         console.print("[yellow]Remove --dry-run to actually execute[/yellow]")
         return
 
     # Confirmation for large operations
     days = (end_date - start_date).days + 1
-    if days > 90:
-        console.print(f"[yellow]Large backfill: {days} days[/yellow]")
+    if days > 90 or earnings_date_parsed:
+        if earnings_date_parsed:
+            console.print(f"[yellow]Large backfill: Earnings batch mode, {days} days[/yellow]")
+        else:
+            console.print(f"[yellow]Large backfill: {days} days[/yellow]")
         if not typer.confirm("Continue?"):
             console.print("[yellow]Cancelled[/yellow]")
             return
@@ -613,6 +708,13 @@ def backfill_options(
         params = BackfillOptionsParams(
             underlying=symbol,
             spot_price=spot_price,
+            earnings_date=earnings_date_parsed,
+            auto_spot_price=earnings_date_parsed is not None,
+            k_expirations=k_expirations,
+            snapshot_date=snapshot_date_parsed,
+            earnings_dataset_name=earnings_dataset,
+            option_chains_dataset_name=option_chains_dataset,
+            stocks_dataset_name=stocks_dataset,
             start_date=start_date,
             end_date=end_date,
             bar_size=bar_size,
@@ -622,7 +724,8 @@ def backfill_options(
             max_dte=max_dte,
             pipeline_name=pipeline_name,
             dataset_name=dataset,
-            database_path=Path("data"),
+            use_delta=use_delta,
+            client_id=client_id,
         )
 
         # Get connection config
@@ -675,7 +778,10 @@ def backfill_options(
 
 @app.command()
 def backfill_equity(
-    symbols: List[str] = typer.Argument(..., help="Stock symbols to backfill"),
+    symbols: Optional[List[str]] = typer.Argument(None, help="Stock symbols to backfill (or use --earnings-date)"),
+    earnings_date: Optional[str] = typer.Option(
+        None, "--earnings-date", help="Earnings date to backfill all symbols (YYYY-MM-DD, mutually exclusive with symbols)"
+    ),
     start: Optional[str] = typer.Option(
         None, "--start", help="Start date (YYYY-MM-DD, default: 30 days ago)"
     ),
@@ -685,6 +791,7 @@ def backfill_equity(
     bar_size: str = typer.Option("1 day", "--bar-size", "-b", help="Bar size"),
     pipeline_name: str = typer.Option("ib_stocks", "--pipeline-name", "--pipeline", help="Pipeline name"),
     dataset: str = typer.Option("stocks", "--dataset", help="Dataset name"),
+    earnings_dataset: str = typer.Option("earnings", "--earnings-dataset", help="Earnings dataset name"),
     database: Optional[str] = typer.Option(None, "--database", "--db", help="[Deprecated] Use --pipeline-name instead"),
     config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
     # New options
@@ -693,27 +800,31 @@ def backfill_equity(
     log_file: Optional[Path] = typer.Option(None, "--log-file", help="Write logs to file with rotation"),
     json_logs: bool = typer.Option(False, "--json-logs", help="Output structured JSON logs"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without doing it"),
+    client_id: Optional[int] = typer.Option(None, "--client-id", help="IB Gateway client ID (overrides config default)"),
+    use_delta: bool = typer.Option(False, "--delta", help="Use Delta Lake format (ACID transactions, time travel)"),
 ):
     """
     Backfill equity bars with gap detection.
 
-    Example:
+    Two modes:
+    1. Explicit symbols: dlt-ibapi backfill-equity AAPL MSFT GOOGL
+    2. Earnings batch: dlt-ibapi backfill-equity --earnings-date 2025-11-13
+
+    Examples:
         dlt-ibapi backfill-equity AAPL MSFT GOOGL --bar-size "1 day"
+        dlt-ibapi backfill-equity --earnings-date 2025-11-13 --start 2025-01-01 --end 2025-11-13
         dlt-ibapi backfill-equity AAPL --pipeline-name my_stocks --verbose
-        dlt-ibapi backfill-equity AAPL MSFT --dry-run
     """
-    from .utils.logging import setup_logging
     from .cli import BackfillEquityParams, execute_backfill_equity
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
-    # Setup logging
-    setup_logging(
-        level="INFO",
-        log_file=log_file,
-        verbose=verbose,
-        quiet=quiet or dry_run,  # Suppress logs in dry-run
-        json_logs=json_logs,
-    )
+    # Validate mutual exclusivity
+    if symbols and earnings_date:
+        console.print("[red]Error: Cannot specify both symbols and --earnings-date. Use one or the other.[/red]")
+        raise typer.Exit(1)
+    if not symbols and not earnings_date:
+        console.print("[red]Error: Must specify either symbols or --earnings-date.[/red]")
+        raise typer.Exit(1)
 
     # Handle legacy --database argument
     if database:
@@ -723,14 +834,21 @@ def backfill_equity(
     # Parse dates
     start_date = datetime.strptime(start, "%Y-%m-%d").date() if start else date.today() - timedelta(days=30)
     end_date = datetime.strptime(end, "%Y-%m-%d").date() if end else date.today()
+    earnings_date_parsed = datetime.strptime(earnings_date, "%Y-%m-%d").date() if earnings_date else None
 
     # Display plan
-    console.print(f"\n[bold cyan]{'DRY RUN: ' if dry_run else ''}Backfilling equity bars for {len(symbols)} symbols[/bold cyan]\n")
+    mode_desc = f"earnings on {earnings_date_parsed}" if earnings_date_parsed else f"{len(symbols)} symbols"
+    console.print(f"\n[bold cyan]{'DRY RUN: ' if dry_run else ''}Backfilling equity bars for {mode_desc}[/bold cyan]\n")
 
     table = Table(show_header=False, box=None)
     table.add_column("Key", style="cyan")
     table.add_column("Value", style="white")
-    table.add_row("Symbols", ", ".join(symbols))
+    if earnings_date_parsed:
+        table.add_row("Mode", "Earnings Batch")
+        table.add_row("Earnings Date", str(earnings_date_parsed))
+    else:
+        table.add_row("Mode", "Explicit Symbols")
+        table.add_row("Symbols", ", ".join(symbols))
     table.add_row("Date Range", f"{start_date} to {end_date}")
     table.add_row("Bar Size", bar_size)
     table.add_row("Pipeline", pipeline_name)
@@ -742,14 +860,21 @@ def backfill_equity(
     # Dry run mode
     if dry_run:
         console.print("[yellow]DRY RUN MODE - No data will be fetched[/yellow]")
-        console.print(f"[yellow]Would backfill {len(symbols)} symbols from {start_date} to {end_date}[/yellow]")
+        if earnings_date_parsed:
+            console.print(f"[yellow]Would backfill earnings symbols from {start_date} to {end_date}[/yellow]")
+        else:
+            console.print(f"[yellow]Would backfill {len(symbols)} symbols from {start_date} to {end_date}[/yellow]")
         console.print("[yellow]Remove --dry-run to actually execute[/yellow]")
         return
 
     # Confirmation for large operations
     days = (end_date - start_date).days + 1
-    if len(symbols) > 10 or days > 90:
-        console.print(f"[yellow]Large backfill: {len(symbols)} symbols, {days} days[/yellow]")
+    num_symbols = len(symbols) if symbols else 0  # Will be determined by earnings loader
+    if (symbols and len(symbols) > 10) or days > 90 or earnings_date_parsed:
+        if earnings_date_parsed:
+            console.print(f"[yellow]Large backfill: Earnings batch mode, {days} days[/yellow]")
+        else:
+            console.print(f"[yellow]Large backfill: {num_symbols} symbols, {days} days[/yellow]")
         if not typer.confirm("Continue?"):
             console.print("[yellow]Cancelled[/yellow]")
             return
@@ -758,12 +883,15 @@ def backfill_equity(
         # Create params
         params = BackfillEquityParams(
             symbols=symbols,
+            earnings_date=earnings_date_parsed,
+            earnings_dataset_name=earnings_dataset,
             start_date=start_date,
             end_date=end_date,
             bar_size=bar_size,
             pipeline_name=pipeline_name,
             dataset_name=dataset,
-            database_path=Path("data"),
+            use_delta=use_delta,
+            client_id=client_id,
         )
 
         # Get connection config
@@ -780,15 +908,17 @@ def backfill_equity(
             TimeRemainingColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task("Backfilling...", total=len(symbols))
+            total_symbols = len(symbols) if symbols else None  # None = indeterminate
+            task = progress.add_task("Backfilling...", total=total_symbols)
             result = execute_backfill_equity(params, connection_config=conn_config)
-            progress.update(task, completed=len(symbols))
+            progress.update(task, completed=total_symbols or len(result.symbols_processed))
 
         # Display results
         console.print()
         if result.success:
             console.print(f"[green]✓ Backfill completed successfully![/green]")
-            console.print(f"[cyan]Symbols processed:[/cyan] {len(result.symbols_processed)}/{len(symbols)}")
+            total_count = len(symbols) if symbols else len(result.symbols_processed)
+            console.print(f"[cyan]Symbols processed:[/cyan] {len(result.symbols_processed)}/{total_count}")
             console.print(f"[cyan]Data saved to:[/cyan] {result.output_path}")
             console.print(f"[cyan]Duration:[/cyan] {result.duration_seconds:.1f}s")
 
@@ -1432,10 +1562,25 @@ def resolve_contracts(
         "--earnings-file",
         help="Load symbols from earnings JSON file",
     ),
-    database_path: Path = typer.Option(
-        Path("data"),
+    sec_type: str = typer.Option(
+        "STK",
+        "--sec-type",
+        help="Security type: STK for equities, OPT for options",
+    ),
+    snapshot_date: Optional[str] = typer.Option(
+        None,
+        "--snapshot-date",
+        help="Load option contracts from snapshot on this date (YYYY-MM-DD) [OPT only]",
+    ),
+    underlying: Optional[str] = typer.Option(
+        None,
+        "--underlying",
+        help="Filter by underlying symbol [OPT only]",
+    ),
+    database_path: Optional[Path] = typer.Option(
+        None,
         "--database-path",
-        help="Path to data directory",
+        help="Path to data directory (default: from storage_config.yaml)",
     ),
     cache_path: Path = typer.Option(
         Path(".dlt-ibapi/cache"),
@@ -1454,26 +1599,32 @@ def resolve_contracts(
     ),
 ):
     """
-    Pre-populate contract cache by resolving symbols to IB contracts.
+    Pre-populate contract cache by resolving symbols/contracts to IB contract details.
 
-    This command resolves symbols to Interactive Brokers contract details and
+    Supports both equity (STK) and option (OPT) contract resolution.
+
+    This command resolves symbols/contracts to Interactive Brokers contract details and
     caches them for faster subsequent operations. Useful for:
     - Pre-resolving earnings symbols before snapshot/backfill
-    - Validating symbols before expensive operations
+    - Pre-resolving option contracts from snapshots before backfill
+    - Validating symbols/contracts before expensive operations
     - Building contract cache for offline use
 
     Examples:
-        # Resolve specific symbols
+        # Resolve equity symbols
         dlt-ibapi resolve-contracts AAPL MSFT GOOGL
 
         # Resolve symbols from earnings calendar
         dlt-ibapi resolve-contracts --earnings-date 2025-11-13
 
-        # Resolve from earnings JSON file
-        dlt-ibapi resolve-contracts --earnings-file earnings.json
+        # Resolve option contracts from snapshot
+        dlt-ibapi resolve-contracts --sec-type OPT --snapshot-date 2025-11-13
+
+        # Resolve options for specific underlying
+        dlt-ibapi resolve-contracts --sec-type OPT --snapshot-date 2025-11-13 --underlying AAPL
 
     The command will:
-    - Skip symbols already in cache
+    - Skip contracts already in cache
     - Handle errors gracefully (log and continue)
     - Report success/failure summary
     """
@@ -1491,12 +1642,26 @@ def resolve_contracts(
                 console.print("Expected format: YYYY-MM-DD")
                 raise typer.Exit(1)
 
-        # Create params
+        # Parse snapshot date
+        parsed_snapshot_date = None
+        if snapshot_date:
+            try:
+                parsed_snapshot_date = datetime.strptime(snapshot_date, "%Y-%m-%d").date()
+            except ValueError:
+                console.print(f"[red]Invalid date format:[/red] {snapshot_date}")
+                console.print("Expected format: YYYY-MM-DD")
+                raise typer.Exit(1)
+
+        # Create params (database_path will use default from storage config if None)
+        from dlt_ibapi.cli.models import _get_default_database_path
         params = ResolveContractsParams(
             symbols=symbols,
             earnings_date=parsed_earnings_date,
             earnings_file=earnings_file,
-            database_path=database_path,
+            sec_type=sec_type,
+            snapshot_date=parsed_snapshot_date,
+            underlying=underlying,
+            database_path=database_path if database_path else _get_default_database_path(),
             cache_path=cache_path,
             exchange=exchange,
             currency=currency,

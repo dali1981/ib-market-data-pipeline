@@ -61,6 +61,9 @@ class ContractCache:
             pa.field("under_conid", pa.int64(), nullable=True),
             pa.field("under_symbol", pa.string(), nullable=True),
             pa.field("under_sec_type", pa.string(), nullable=True),
+            pa.field("strike", pa.float64(), nullable=True),
+            pa.field("right", pa.string(), nullable=True),  # "C" or "P"
+            pa.field("last_trade_date", pa.string(), nullable=True),  # YYYYMMDD
 
             # Metadata
             pa.field("long_name", pa.string(), nullable=True),
@@ -241,3 +244,41 @@ class ContractCache:
         """
         table = self.load(symbol=symbol, sec_type=sec_type)
         return table.to_pandas()
+
+    def get_option_contract(
+        self,
+        symbol: str,
+        expiry: str,
+        strike: float,
+        right: str,
+    ) -> Optional[dict]:
+        """
+        Get specific option contract by its parameters.
+
+        Args:
+            symbol: Underlying symbol
+            expiry: Expiration date (YYYYMMDD format)
+            strike: Strike price
+            right: "C" or "P"
+
+        Returns:
+            Contract dict or None if not found
+        """
+        # Load all option contracts for symbol
+        table = self.load(symbol=symbol, sec_type="OPT")
+        if table.num_rows == 0:
+            return None
+
+        df = table.to_pandas()
+
+        # Filter by option-specific fields
+        matches = df[
+            (df["last_trade_date"] == expiry)
+            & (df["strike"] == strike)
+            & (df["right"] == right)
+        ]
+
+        if matches.empty:
+            return None
+
+        return matches.iloc[0].to_dict()

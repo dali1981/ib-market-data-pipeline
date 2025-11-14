@@ -127,7 +127,9 @@ class BaseReader(ABC):
         for key, value in filters.items():
             if value is not None:
                 param_name = f"filter_{key}"
-                where_clauses.append(f"{key} = ${param_name}")
+                # Quote column name if it's a SQL reserved keyword (e.g., 'right')
+                column = f'"{key}"' if key.lower() in ('right', 'left', 'order', 'group') else key
+                where_clauses.append(f"{column} = ${param_name}")
                 params[param_name] = value
 
         where_sql = " AND ".join(where_clauses)
@@ -175,7 +177,9 @@ class BaseReader(ABC):
         for key, value in filters.items():
             if value is not None:
                 param_name = f"filter_{key}"
-                where_clauses.append(f"{key} = ${param_name}")
+                # Quote column name if it's a SQL reserved keyword (e.g., 'right')
+                column = f'"{key}"' if key.lower() in ('right', 'left', 'order', 'group') else key
+                where_clauses.append(f"{column} = ${param_name}")
                 params[param_name] = value
 
         # Build query
@@ -209,7 +213,9 @@ class BaseReader(ABC):
         for key, value in filters.items():
             if value is not None:
                 param_name = f"filter_{key}"
-                where_clauses.append(f"{key} = ${param_name}")
+                # Quote column name if it's a SQL reserved keyword (e.g., 'right')
+                column = f'"{key}"' if key.lower() in ('right', 'left', 'order', 'group') else key
+                where_clauses.append(f"{column} = ${param_name}")
                 params[param_name] = value
 
         query = f"SELECT COUNT(*) as count FROM {full_table}"

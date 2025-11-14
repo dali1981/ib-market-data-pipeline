@@ -1,12 +1,14 @@
+
 [project]
 name = "dlt-ibapi"
 version = "0.1.0"
 description = "DLT connector for Interactive Brokers - ingest market data via IB Gateway/TWS into data pipelines"
 requires-python = ">=3.12"
 dependencies = [
+    "delta-lake-storage",
     "dlt[filesystem,parquet,duckdb]>=0.4.0", # Added filesystem and parquet extras
     "ib-connector>=0.1.0",
-    "matplotlib>=3.10.7",  # For equity curve plots in backtesting
+    "matplotlib>=3.10.7", # For equity curve plots in backtesting
     "notebook>=7.4.7",
     "omegaconf>=2.3.0",
     "pandas>=2.3.3",
@@ -15,7 +17,8 @@ dependencies = [
     "pydantic>=2.0.0",
     "rich>=14.2.0",
     "scipy>=1.15.3",
-    "tools>=0.1.0",  # Shared backtesting framework
+    "structlog>=25.5.0",
+    "tools>=0.1.0", # Shared backtesting framework
     "typer>=0.19.2",
 ]
 
@@ -32,6 +35,7 @@ dev = [
 [tool.uv.sources]
 ib-connector = { path = "../ib-connector", editable = true }
 tools = { path = "../tools", editable = true }
+delta-lake-storage = { path = "../delta-lake-storage" }
 
 [build-system]
 requires = ["hatchling"]
