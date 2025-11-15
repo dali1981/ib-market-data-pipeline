@@ -282,24 +282,127 @@ class IBBacktestDataProvider:
         symbol: str,
         lookback: int,
         timestamp: datetime,
+        dte_range: Tuple[int, int] = (14, 60),
     ) -> Optional[List[float]]:
         """
-        Get historical IV for a symbol.
+        Get historical ATM IV for a symbol.
 
-        Note: This is a simplified implementation. In practice, you'd want
-        to track ATM IV over time from option bars.
+        Process:
+        1. Get historical equity bars for lookback period
+        2. For each bar date (sampled every 5 days to reduce computation):
+           a. Find ATM option contracts (14-60 DTE)
+           b. Calculate IV from option mid price
+        3. Return list of historical IV values
+
+        Note: This is computationally expensive. Consider caching results.
 
         Args:
             symbol: Underlying symbol
             lookback: Days of history
             timestamp: Current timestamp
+            dte_range: DTE range for ATM options (default: 14-60)
 
         Returns:
-            List of historical IV values or None
+            List of historical IV values or None if insufficient data
         """
-        # TODO: Implement IV history tracking
-        # For now, return None (strategies will skip IV percentile checks)
-        return None
+        from datetime import timedelta
+
+        start_date = timestamp.date() - timedelta(days=lookback)
+        end_date = timestamp.date()
+
+        try:
+            # Get historical equity bars
+            equity_bars = self.equity_reader.get_bars(
+                symbol=symbol,
+                bar_size="1 day",
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            if equity_bars.empty or len(equity_bars) < 30:
+                return None  # Need at least 30 days
+
+            # Sample every 5 days to reduce computation
+            sampled_bars = equity_bars.iloc[::5]
+
+            historical_ivs = []
+
+            for _, bar in sampled_bars.iterrows():
+                bar_date = bar['date']
+                spot_price = bar['close']
+
+                try:
+                    # Get option chain snapshot
+                    from dlt_ibapi.repositories import OptionChainSnapshotReader
+                    snapshot_reader = OptionChainSnapshotReader(
+                        self.data_path, "option_chains"
+                    )
+
+                    expirations = snapshot_reader.get_available_expirations(
+                        underlying=symbol,
+                        as_of=bar_date,
+                        min_dte=dte_range[0],
+                        max_dte=dte_range[1],
+                    )
+
+                    if not expirations:
+                        continue
+
+                    # Use first expiration in range
+                    expiration = expirations[0]
+                    dte = (expiration - bar_date).days
+
+                    # Find ATM strike
+                    strikes = snapshot_reader.get_strikes_for_expiry(
+                        underlying=symbol,
+                        as_of=bar_date,
+                        expiration=expiration,
+                    )
+
+                    if not strikes:
+                        continue
+
+                    atm_strike = min(strikes, key=lambda k: abs(k - spot_price))
+
+                    # Get option bars
+                    bars = self.option_bars_reader.get_bars(
+                        underlying=symbol,
+                        expiry=expiration,
+                        strike=atm_strike,
+                        right="C",  # Use calls for IV
+                        bar_size="1 day",
+                        start_date=bar_date,
+                        end_date=bar_date,
+                    )
+
+                    if bars.empty:
+                        continue
+
+                    # Calculate IV from mid price
+                    mid_price = (bars.iloc[-1]["high"] + bars.iloc[-1]["low"]) / 2.0
+
+                    if mid_price <= 0:
+                        continue
+
+                    greeks = self.greeks_calculator.calculate_greeks_from_price(
+                        option_price=mid_price,
+                        spot=spot_price,
+                        strike=atm_strike,
+                        dte=dte,
+                        option_type="C",
+                        risk_free_rate=0.05,
+                    )
+
+                    if greeks and greeks.iv > 0:
+                        historical_ivs.append(greeks.iv)
+
+                except Exception:
+                    continue
+
+            return historical_ivs if len(historical_ivs) >= 10 else None
+
+        except Exception:
+            return None
 
 
 class EarningsCalendarProvider:

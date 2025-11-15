@@ -1,0 +1,47 @@
+# Delta Lake Storage Configuration for dlt-ibapi
+#
+# This file configures storage backends for market data pipelines.
+# Supports: Parquet (local), Delta Lake (ACID), S3/MinIO (cloud), DuckDB (SQL)
+
+storage:
+  # Storage backend type
+  # Options: filesystem, s3, delta_lake, duckdb
+  backend: delta_lake
+
+  # Local filesystem configuration (Delta Lake)
+  # UPDATED: Now using ./data_delta with migrated Delta Lake tables
+  base_path: ./data_delta
+
+  # S3/MinIO configuration (for cloud/Delta Lake)
+  # Uncomment to use S3 or local MinIO:
+  # bucket_url: s3://ibapi-data/warehouse
+
+  # DuckDB configuration (for SQL analytics)
+  # Uncomment to use DuckDB backend:
+  # duckdb_path: ibapi_pipeline.duckdb
+  # catalog_name: ib_catalog
+  # schema_name: market_data
+  # read_only: true
+
+  # Delta Lake configuration
+  # Set to true to enable Delta Lake format (ACID, time travel, schema evolution)
+  # UPDATED: Enabled after migration on 2025-11-14
+  use_delta: true
+
+  # Delta Lake table properties (optional)
+  delta_table_properties: {}
+
+  # Default partition columns for Hive-style partitioning
+  # Used for all datasets unless overridden
+  default_partition_cols:
+    - date
+    - symbol
+
+# Table name mappings (optional)
+# Register custom table aliases here if needed
+tables:
+  tables:
+    equity_bars: historical_bars
+    option_bars: option_bars
+    option_chains: option_chain_snapshots
+    earnings: earnings_calendar

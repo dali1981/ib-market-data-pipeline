@@ -572,7 +572,7 @@ def backfill_options(
         None, "--earnings-date", help="Earnings date to backfill all symbols (YYYY-MM-DD, mutually exclusive with symbol)"
     ),
     k_expirations: Optional[int] = typer.Option(
-        None, "--k-expirations", help="Limit to k closest expirations beyond earnings date (only with --earnings-date)"
+        None, "--k-expirations", help="Limit to k closest expirations (soonest to expire)"
     ),
     snapshot_date: Optional[str] = typer.Option(
         None, "--snapshot-date", help="Snapshot date to read expirations from (defaults to earnings-date)"
@@ -636,9 +636,6 @@ def backfill_options(
     if earnings_date and spot_price is not None:
         console.print("[red]Error: spot_price should not be specified with --earnings-date (auto-extracted).[/red]")
         raise typer.Exit(1)
-
-    if k_expirations and not earnings_date:
-        console.print("[yellow]Warning: --k-expirations only applies with --earnings-date. Ignoring.[/yellow]")
 
     # Handle legacy --database argument
     if database:

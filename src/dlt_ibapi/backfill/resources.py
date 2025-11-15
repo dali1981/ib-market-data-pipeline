@@ -19,6 +19,7 @@ from dlt_ibapi.backfill.download_planner import DownloadPlanner
 from dlt_ibapi.repositories import OptionChainSnapshotReader, OptionBarsReader, EquityBarsReader
 from dlt_ibapi.transformers import normalize_bar_data
 from dlt_ibapi.utils.logging import get_logger
+from dlt_ibapi.utils.ib_datetime import format_ib_end_datetime
 from ib_connector import make_stock
 
 
@@ -294,6 +295,16 @@ def backfill_option_bars(
             log.warning(f"No expirations found in DTE range [{backfill_config.min_dte}, {backfill_config.max_dte}]")
             return
 
+        # Filter to k closest expirations if requested
+        if backfill_config.k_expirations is not None and len(expirations) > backfill_config.k_expirations:
+            # Sort by expiration date (ascending = soonest first)
+            expirations_sorted = sorted(expirations)
+            expirations = expirations_sorted[:backfill_config.k_expirations]
+            log.info(
+                f"Filtered to {backfill_config.k_expirations} closest expirations "
+                f"(out of {len(expirations_sorted)} available)"
+            )
+
         # Get strikes (same for all expirations in IB option chains)
         strikes = chain_reader.get_strikes_for_expiry(
             underlying=underlying,
@@ -367,19 +378,33 @@ def backfill_option_bars(
                 f"in {plan.api_calls_required} API calls"
             )
 
-            # Resolve contract (uses cache if available)
+            # Resolve contract to get the ACTUAL Contract object from IB
+            # CRITICAL: We must use the Contract object returned by ContractDetails,
+            # not reconstruct it ourselves
             try:
-                resolved = resolver.resolve_option_contract(
+                # Create partial contract for ContractDetails lookup
+                partial_contract = make_option(
                     symbol=underlying,
-                    expiry=expiry.strftime("%Y%m%d"),
+                    last_trade_date=expiry.strftime("%Y%m%d"),
                     strike=strike,
                     right=right,
-                    exchange="SMART",
-                    currency="USD",
-                    use_cache=True,
-                    save_to_cache=True,
+                    exch="SMART",
                 )
-                log.info(f"Resolved contract: conid={resolved['conid']}, local_symbol={resolved.get('local_symbol')}")
+
+                # Get full contract details from IB
+                from ib_connector import ContractDetailsService
+                contract_svc = ContractDetailsService(runtime)
+                details_list = contract_svc.fetch(partial_contract, timeout=10.0)
+
+                if not details_list:
+                    log.error(f"No contract details found for {underlying} {expiry} {strike}{right}")
+                    log.warning(f"Skipping contract - does not exist in IB system")
+                    continue
+
+                # Use the ACTUAL resolved Contract object from IB
+                contract = details_list[0].contract
+                log.info(f"Resolved contract: conid={contract.conId}, local_symbol={contract.localSymbol}")
+
             except Exception as e:
                 log.error(f"Failed to resolve contract {underlying} {expiry} {strike}{right}: {e}")
                 log.warning(f"Skipping contract due to resolution failure")
@@ -388,22 +413,6 @@ def backfill_option_bars(
             # Fetch bars for each batch
             for batch_start, batch_end in plan.batches:
                 log.info(f"Fetching bars for batch: {batch_start} to {batch_end}")
-
-                # Create option contract using resolved details
-                contract = make_option(
-                    symbol=underlying,
-                    last_trade_date=expiry.strftime("%Y%m%d"),
-                    strike=strike,
-                    right=right,
-                    exch=resolved.get("exchange", "SMART"),
-                )
-                # Set additional fields from resolved contract
-                if resolved.get("trading_class"):
-                    contract.tradingClass = resolved["trading_class"]
-                if resolved.get("local_symbol"):
-                    contract.localSymbol = resolved["local_symbol"]
-                if resolved.get("conid"):
-                    contract.conId = resolved["conid"]
 
                 # Calculate duration for this batch
                 days_span = (batch_end - batch_start).days + 1
@@ -423,7 +432,7 @@ def backfill_option_bars(
                 try:
                     bars = hist_svc.bars(
                         contract=contract,
-                        endDateTime=batch_end.strftime("%Y%m%d 23:59:59"),
+                        endDateTime=format_ib_end_datetime(batch_end),
                         durationStr=duration_str,
                         barSizeSetting=backfill_config.bar_size,
                         whatToShow=backfill_config.what_to_show,
@@ -635,7 +644,7 @@ def backfill_equity_bars(
             try:
                 bars = hist_svc.bars(
                     contract=contract,
-                    endDateTime=batch_end.strftime("%Y%m%d 23:59:59"),
+                    endDateTime=format_ib_end_datetime(batch_end),
                     durationStr=duration_str,
                     barSizeSetting=bar_size,
                     whatToShow=what_to_show,

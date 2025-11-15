@@ -120,6 +120,13 @@ class OptionBackfillConfig(BackfillConfig):
         ge=1
     )
 
+    k_expirations: Optional[int] = Field(
+        default=None,
+        description="Limit to k closest expirations (soonest to expire). None = use all expirations.",
+        ge=1,
+        le=20
+    )
+
     # Call/put selection
     include_calls: bool = Field(
         default=True,

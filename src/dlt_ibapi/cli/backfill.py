@@ -346,6 +346,7 @@ def _execute_backfill_options_single(
             k_strikes=params.k_strikes,
             min_dte=params.min_dte,
             max_dte=params.max_dte,
+            k_expirations=params.k_expirations,
         )
 
         # Create pipeline with delta-lake-storage
@@ -569,6 +570,18 @@ def _execute_backfill_options_earnings(
                     warnings.append(f"No snapshot data for {symbol} - skipping")
                     logger.warning("no_snapshot_data", symbol=symbol)
                     continue
+
+                # Filter to k closest expirations if requested
+                if params.k_expirations is not None and len(expirations) > params.k_expirations:
+                    # Sort by expiration date (ascending = soonest first)
+                    expirations_sorted = sorted(expirations)
+                    expirations = expirations_sorted[:params.k_expirations]
+                    logger.info(
+                        "filtered_expirations",
+                        symbol=symbol,
+                        k_expirations=params.k_expirations,
+                        selected=len(expirations),
+                    )
 
                 # Backfill all expirations for this symbol in one call
                 logger.debug("backfilling_symbol", symbol=symbol, expirations=len(expirations))
