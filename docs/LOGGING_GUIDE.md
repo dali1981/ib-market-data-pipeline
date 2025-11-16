@@ -178,13 +178,18 @@ dlt-ibapi backfill-options AAPL 150.0 --log-file logs/backfill.log
 **Automatic rotation** when file reaches 10MB:
 ```
 logs/
-├── backfill.log          # Current log (0-10MB)
-├── backfill.log.1        # Previous rotation
-├── backfill.log.2        # 2nd previous
-├── backfill.log.3        # 3rd previous
-├── backfill.log.4        # 4th previous
-└── backfill.log.5        # 5th previous (oldest kept)
+├── backfill.log                      # Current log (0-10MB)
+├── backfill-2025-11-16T21-30-15.log  # Rotated 30 mins ago
+├── backfill-2025-11-16T20-45-03.log  # Rotated 1 hour ago
+├── backfill-2025-11-16T18-22-41.log  # Rotated 3 hours ago
+├── backfill-2025-11-16T15-10-28.log  # Rotated 6 hours ago
+└── backfill-2025-11-16T12-05-17.log  # Rotated 9 hours ago (oldest kept)
 ```
+
+**Timestamp Format**: `<name>-<YYYY-MM-DDTHH-MM-SS>.<ext>`
+- ISO 8601 format for easy sorting and identification
+- Timestamps indicate when rotation occurred
+- Files sorted by modification time (newest kept, oldest deleted)
 
 **Configuration**:
 - **Max file size**: 10 MB
@@ -372,12 +377,12 @@ dlt-ibapi backfill-options --earnings-date 2025-11-13 \
 logs/
 ├── backfill/
 │   ├── options_2025-11-16.log
-│   ├── options_2025-11-16.log.1
+│   ├── options_2025-11-16-2025-11-16T14-30-00.log  # Rotated backup
 │   ├── equity_2025-11-16.log
-│   └── equity_2025-11-16.log.1
+│   └── equity_2025-11-16-2025-11-16T12-15-30.log   # Rotated backup
 ├── snapshots/
 │   ├── earnings_2025-11-13.log
-│   └── earnings_2025-11-13.log.1
+│   └── earnings_2025-11-13-2025-11-13T10-45-00.log # Rotated backup
 └── errors/
     └── backfill_errors_2025-11-16.log
 ```
