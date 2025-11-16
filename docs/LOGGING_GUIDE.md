@@ -323,10 +323,10 @@ options_backfill_complete (duration=120.5)
 
 ```bash
 # Quiet mode + file logging (only warnings/errors to console)
-dlt-ibapi backfill-equity AAPL MSFT GOOGL \
-  --bar-size "1 day" \
-  --quiet \
-  --log-file logs/equity_backfill.log
+# Global options BEFORE command
+dlt-ibapi --quiet --log-file logs/equity_backfill.log \
+  backfill-equity AAPL MSFT GOOGL \
+  --bar-size "1 day"
 ```
 
 **Console output** (only warnings/errors):
@@ -346,11 +346,10 @@ dlt-ibapi backfill-equity AAPL MSFT GOOGL \
 ### Snapshot
 
 ```bash
-# Verbose debug + JSON logs
-dlt-ibapi snapshot --earnings-date 2025-11-13 \
-  --min-dte 7 --max-dte 60 \
-  --verbose \
-  --json-logs
+# Verbose debug + JSON logs (global options BEFORE command)
+dlt-ibapi --verbose --json-logs \
+  snapshot --earnings-date 2025-11-13 \
+  --min-dte 7 --max-dte 60
 ```
 
 ---
@@ -359,14 +358,12 @@ dlt-ibapi snapshot --earnings-date 2025-11-13 \
 
 ### Combining Options
 
-All logging options can be combined:
+All logging options can be combined (all global options BEFORE command):
 
 ```bash
 # Verbose + JSON + File
-dlt-ibapi backfill-options --earnings-date 2025-11-13 \
-  --verbose \
-  --json-logs \
-  --log-file logs/debug.json
+dlt-ibapi --verbose --json-logs --log-file logs/debug.json \
+  backfill-options --earnings-date 2025-11-13
 ```
 
 **Result**:
@@ -392,15 +389,15 @@ logs/
 
 **Example commands**:
 ```bash
-# Separate log files per operation type
-dlt-ibapi backfill-options --earnings-date 2025-11-13 \
-  --log-file logs/backfill/options_$(date +%Y-%m-%d).log
+# Separate log files per operation type (global options BEFORE command)
+dlt-ibapi --log-file logs/backfill/options_$(date +%Y-%m-%d).log \
+  backfill-options --earnings-date 2025-11-13
 
-dlt-ibapi backfill-equity --earnings-date 2025-11-13 \
-  --log-file logs/backfill/equity_$(date +%Y-%m-%d).log
+dlt-ibapi --log-file logs/backfill/equity_$(date +%Y-%m-%d).log \
+  backfill-equity --earnings-date 2025-11-13
 
-dlt-ibapi snapshot --earnings-date 2025-11-13 \
-  --log-file logs/snapshots/earnings_2025-11-13.log
+dlt-ibapi --log-file logs/snapshots/earnings_2025-11-13.log \
+  snapshot --earnings-date 2025-11-13
 ```
 
 ### Parsing JSON Logs with jq
@@ -452,14 +449,14 @@ jq 'select(.event == "options_backfill_complete") | .duration' logs/backfill.jso
 # Progress to stdout, logs to stderr
 dlt-ibapi backfill-options AAPL 150.0 > progress.txt 2> errors.log
 
-# Only errors to file
-dlt-ibapi backfill-options AAPL 150.0 --quiet 2> errors.log
+# Only errors to file (--quiet BEFORE command)
+dlt-ibapi --quiet backfill-options AAPL 150.0 2> errors.log
 ```
 
 **Tee for both console and file**:
 ```bash
-# See on console AND save to file
-dlt-ibapi backfill-options AAPL 150.0 --json-logs 2>&1 | tee logs/backfill.json
+# See on console AND save to file (--json-logs BEFORE command)
+dlt-ibapi --json-logs backfill-options AAPL 150.0 2>&1 | tee logs/backfill.json
 ```
 
 ---
@@ -470,31 +467,33 @@ dlt-ibapi backfill-options AAPL 150.0 --json-logs 2>&1 | tee logs/backfill.json
 
 **Check log level**:
 ```bash
-# If using --quiet, only warnings/errors shown
-dlt-ibapi backfill-options AAPL 150.0 --quiet
+# If using --quiet, only warnings/errors shown (BEFORE command)
+dlt-ibapi --quiet backfill-options AAPL 150.0
 
-# Use --verbose to see everything
-dlt-ibapi backfill-options AAPL 150.0 --verbose
+# Use --verbose to see everything (BEFORE command)
+dlt-ibapi --verbose backfill-options AAPL 150.0
 ```
 
 ### Log File Not Created
 
-**Check path permissions**:
+**Check path permissions and option placement**:
 ```bash
-# Create log directory first
+# IMPORTANT: --log-file must come BEFORE command name
+# Wrong: dlt-ibapi backfill-options AAPL 150.0 --log-file logs/backfill.log
+# Correct:
 mkdir -p logs/
-dlt-ibapi backfill-options AAPL 150.0 --log-file logs/backfill.log
+dlt-ibapi --log-file logs/backfill.log backfill-options AAPL 150.0
 
 # Use absolute path
-dlt-ibapi backfill-options AAPL 150.0 --log-file /tmp/backfill.log
+dlt-ibapi --log-file /tmp/backfill.log backfill-options AAPL 150.0
 ```
 
 ### Too Many Logs
 
 **Use quiet mode**:
 ```bash
-# Only show important messages
-dlt-ibapi backfill-options AAPL 150.0 --quiet
+# Only show important messages (--quiet BEFORE command)
+dlt-ibapi --quiet backfill-options AAPL 150.0
 ```
 
 **Filter specific loggers**:
@@ -533,24 +532,24 @@ jq '.[]' logs/backfill.json
 
 ## Best Practices
 
-1. **Use `--verbose` for development/debugging**
+1. **Use `--verbose` for development/debugging** (BEFORE command)
    ```bash
-   dlt-ibapi backfill-options AAPL 150.0 --verbose
+   dlt-ibapi --verbose backfill-options AAPL 150.0
    ```
 
-2. **Use `--quiet` for production/cron jobs**
+2. **Use `--quiet` for production/cron jobs** (BEFORE command)
    ```bash
-   dlt-ibapi backfill-options AAPL 150.0 --quiet --log-file logs/backfill.log
+   dlt-ibapi --quiet --log-file logs/backfill.log backfill-options AAPL 150.0
    ```
 
-3. **Use `--json-logs` for monitoring systems**
+3. **Use `--json-logs` for monitoring systems** (BEFORE command)
    ```bash
-   dlt-ibapi backfill-options AAPL 150.0 --json-logs --log-file logs/backfill.json
+   dlt-ibapi --json-logs --log-file logs/backfill.json backfill-options AAPL 150.0
    ```
 
-4. **Always use `--log-file` for long-running operations**
+4. **Always use `--log-file` for long-running operations** (BEFORE command)
    ```bash
-   dlt-ibapi backfill-options --earnings-date 2025-11-13 --log-file logs/earnings_batch.log
+   dlt-ibapi --log-file logs/earnings_batch.log backfill-options --earnings-date 2025-11-13
    ```
 
 5. **Organize logs by date and operation**
@@ -578,17 +577,17 @@ jq '.[]' logs/backfill.json
 | `--json-logs` | - | JSON output format | OFF (console format) |
 | `--log-file` | - | Write to file with rotation | OFF (console only) |
 
-**Examples**:
+**Examples** (global options BEFORE command):
 ```bash
 # Development
-dlt-ibapi backfill-options AAPL 150.0 --verbose
+dlt-ibapi --verbose backfill-options AAPL 150.0
 
 # Production
-dlt-ibapi backfill-options AAPL 150.0 --quiet --log-file logs/backfill.log
+dlt-ibapi --quiet --log-file logs/backfill.log backfill-options AAPL 150.0
 
 # Monitoring
-dlt-ibapi backfill-options AAPL 150.0 --json-logs --log-file logs/backfill.json
+dlt-ibapi --json-logs --log-file logs/backfill.json backfill-options AAPL 150.0
 
 # Debug to file
-dlt-ibapi backfill-options AAPL 150.0 --verbose --log-file logs/debug.log
+dlt-ibapi --verbose --log-file logs/debug.log backfill-options AAPL 150.0
 ```
