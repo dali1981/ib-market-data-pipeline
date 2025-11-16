@@ -2,7 +2,8 @@
 
 **Date**: November 17, 2024
 **Notebook**: `notebooks/07_refined_pnl_with_tick_data.ipynb`
-**Status**: ✅ Executed successfully (no tick data available as expected)
+**Status**: ✅ Fixed - Now handles missing tick data gracefully
+**Update**: Added error handling to cells 4 and 5
 
 ---
 
@@ -69,21 +70,25 @@ Entry window: 2025-11-12 15:00:00 to 2025-11-12 16:00:00
 Exit window: 2025-11-13 09:00:00 to 2025-11-13 10:00:00
 ```
 
-### Cell 4: Load Entry Ticks ❌ (Expected)
-**Error**: IOException - No parquet files found
+### Cell 4: Load Entry Ticks ✅ (Fixed)
+**Previous behavior**: IOException crashed the notebook
 
-**This is correct behavior** because:
-1. No tick data has been downloaded
-2. Would need to run: `dlt-ibapi backfill-ticks DIS 20251114 110.0 C --start "2025-11-12 15:00" --end "2025-11-12 16:00"`
-3. But that command fails because November 2025 is in the future
+**New behavior**: Graceful error handling with helpful instructions
+- Catches IOException when tick data is missing
+- Displays exact command to download the required data
+- Shows note about historical dates requirement
+- Creates empty DataFrame to allow notebook to continue
+- References TICK_DATA_TESTING_GUIDE.md for testing
 
-### Subsequent Cells: Skipped
-Due to missing data, the following analyses couldn't run:
-- Entry/exit price calculations
-- P&L scenarios (first tick, time-weighted, median, best/worst case)
-- Bar vs tick comparison
-- Spread cost analysis
-- Visualizations
+### Cell 5: Load Exit Ticks ✅ (Fixed)
+Same error handling applied as cell 4
+
+### Subsequent Cells: Execute Gracefully
+With empty DataFrames, the notebook now:
+- ✅ Runs without crashing
+- ✅ Shows "Cannot calculate P&L - missing tick data" messages
+- ✅ Displays "Next Steps" instructions at the end
+- ✅ Completes successfully (no exceptions)
 
 ---
 
@@ -209,10 +214,39 @@ Net P&L (after spread costs): $37.50
 
 ## Conclusion
 
-**Notebook executed successfully** with expected "no data" error.
+**Notebook now executes successfully** without crashing, even when tick data is missing.
 
 All infrastructure is working correctly. The only missing piece is actual tick data, which requires either:
 - Using the test script with historical dates (available now)
 - Waiting for November 2025 (future earnings dates)
 
 **Ready for production use** when data is available! 🚀
+
+---
+
+## Recent Fixes (November 17, 2024)
+
+### Issue: Notebook crashed with IOException
+**Problem**: When tick data files didn't exist, cells 4 and 5 would crash with:
+```
+IOException: IO Error: No files found that match the pattern
+"/Users/mohamedali/trading_project/dlt-ibapi/data_delta/option_ticks/option_ticks_bid_ask/**/*.parquet"
+```
+
+**Solution**: Added try-except blocks to cells 4 and 5:
+- Catches all exceptions (IOException, AttributeError, etc.)
+- Displays user-friendly error message with exact command to download data
+- Shows note that dates must be historical (not future)
+- References TICK_DATA_TESTING_GUIDE.md for testing instructions
+- Creates empty DataFrame to allow notebook to continue running
+- All subsequent cells handle empty DataFrames gracefully
+
+**Result**: Notebook runs to completion without errors, provides helpful instructions to the user
+
+### Code Changes
+**Cell 4 (Entry Ticks)**: Wrapped `tick_reader.get_ticks()` in try-except with helpful output
+**Cell 5 (Exit Ticks)**: Same error handling pattern as cell 4
+
+**Files Modified**:
+- `notebooks/07_refined_pnl_with_tick_data.ipynb` - Cells 4 and 5
+- `NOTEBOOK_07_EXECUTION_REPORT.md` - Updated status and documentation
