@@ -16,6 +16,8 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple, Literal
 import pandas as pd
 
+from ..utils.black_scholes import implied_volatility
+
 
 @dataclass
 class CalendarSpreadPosition:
@@ -61,6 +63,9 @@ class CalendarSpreadResult:
         exit_time: When position was exited (after earnings)
         success: Whether backtest completed successfully
         failure_reason: Reason for failure if success=False
+        iv_short_entry: IV of short leg at entry (optional)
+        iv_long_entry: IV of long leg at entry (optional)
+        iv_ratio_entry: Short IV / Long IV at entry (optional)
     """
     position: CalendarSpreadPosition
     pnl: float
@@ -68,6 +73,9 @@ class CalendarSpreadResult:
     exit_time: datetime
     success: bool
     failure_reason: Optional[str] = None
+    iv_short_entry: Optional[float] = None
+    iv_long_entry: Optional[float] = None
+    iv_ratio_entry: Optional[float] = None
 
     @property
     def pnl_pct(self) -> float:
@@ -93,6 +101,9 @@ class CalendarSpreadResult:
             'exit_time': self.exit_time,
             'success': self.success,
             'failure_reason': self.failure_reason,
+            'iv_short_entry': self.iv_short_entry,
+            'iv_long_entry': self.iv_long_entry,
+            'iv_ratio_entry': self.iv_ratio_entry,
         }
 
 
@@ -222,6 +233,54 @@ def get_option_price_at_time(
     return valid_bars.iloc[-1][price_column]
 
 
+def calculate_implied_volatility_at_time(
+    option_price: float,
+    spot_price: float,
+    strike: float,
+    expiry: date,
+    target_time: datetime,
+    option_type: Literal['C', 'P'],
+    risk_free_rate: float = 0.05
+) -> Optional[float]:
+    """
+    Calculate implied volatility for an option at a specific time.
+
+    Args:
+        option_price: Market price of the option
+        spot_price: Underlying spot price
+        strike: Strike price
+        expiry: Option expiration date
+        target_time: Time of valuation
+        option_type: 'C' for call, 'P' for put
+        risk_free_rate: Annualized risk-free rate (default 5%)
+
+    Returns:
+        Implied volatility (annualized) or None if calculation fails
+    """
+    # Calculate time to expiry in years
+    days_to_expiry = (expiry - target_time.date()).days
+    if days_to_expiry <= 0:
+        return None
+
+    time_to_expiry = days_to_expiry / 365.0
+
+    # Convert option type
+    opt_type = 'call' if option_type == 'C' else 'put'
+
+    try:
+        iv = implied_volatility(
+            market_price=option_price,
+            S=spot_price,
+            K=strike,
+            T=time_to_expiry,
+            r=risk_free_rate,
+            option_type=opt_type
+        )
+        return iv if iv > 0 else None
+    except Exception:
+        return None
+
+
 def backtest_single_calendar_spread(
     symbol: str,
     earnings_date: date,
@@ -232,6 +291,8 @@ def backtest_single_calendar_spread(
     long_leg_bars: pd.DataFrame,
     short_expiry: date,
     long_expiry: date,
+    spot_price: Optional[float] = None,
+    calculate_iv: bool = False,
 ) -> CalendarSpreadResult:
     """
     Backtest a single calendar spread for one earnings event.
@@ -331,11 +392,40 @@ def backtest_single_calendar_spread(
     pnl = spread_value - entry_cost
     pnl_per_contract = pnl * 100
 
+    # Calculate IV metrics if requested and spot price available
+    iv_short = None
+    iv_long = None
+    iv_ratio = None
+
+    if calculate_iv and spot_price is not None:
+        iv_short = calculate_implied_volatility_at_time(
+            option_price=short_entry,
+            spot_price=spot_price,
+            strike=strike,
+            expiry=short_expiry,
+            target_time=entry_dt,
+            option_type=option_type
+        )
+        iv_long = calculate_implied_volatility_at_time(
+            option_price=long_entry,
+            spot_price=spot_price,
+            strike=strike,
+            expiry=long_expiry,
+            target_time=entry_dt,
+            option_type=option_type
+        )
+
+        if iv_short is not None and iv_long is not None and iv_long > 0:
+            iv_ratio = iv_short / iv_long
+
     return CalendarSpreadResult(
         position=position,
         pnl=pnl,
         pnl_per_contract=pnl_per_contract,
         exit_time=exit_dt,
         success=True,
-        failure_reason=None
+        failure_reason=None,
+        iv_short_entry=iv_short,
+        iv_long_entry=iv_long,
+        iv_ratio_entry=iv_ratio,
     )

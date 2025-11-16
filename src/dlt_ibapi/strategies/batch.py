@@ -101,7 +101,8 @@ def run_batch_calendar_spread_backtest(
     equity_reader: EquityBarsReader,
     option_type: Literal['C', 'P'] = 'C',
     bar_size: str = '1 hour',
-    progress: bool = True
+    progress: bool = True,
+    calculate_iv: bool = False
 ) -> pd.DataFrame:
     """
     Run calendar spread backtest across multiple earnings events.
@@ -262,6 +263,8 @@ def run_batch_calendar_spread_backtest(
                 long_leg_bars=long_leg_bars,
                 short_expiry=short_exp,
                 long_expiry=long_exp,
+                spot_price=spot_price if calculate_iv else None,
+                calculate_iv=calculate_iv,
             )
 
             if result.success:

@@ -92,6 +92,25 @@ Interactive Jupyter notebooks demonstrating the usage of `dlt-ibapi` for fetchin
 
 ---
 
+### 6. IV Ratio Ranking (`06_iv_ratio_ranking.ipynb`)
+
+**Purpose**: Rank trading opportunities by implied volatility ratio to predict profitability.
+
+**Topics Covered**:
+- Calculating IV for short and long legs at entry
+- Computing IV ratio (short IV / long IV)
+- Correlation analysis between IV ratio and P&L
+- Quartile ranking of opportunities
+- Identifying high-probability setups
+
+**Best For**: Trade selection and opportunity ranking
+
+**Prerequisites**: Earnings and option data
+
+**Key Hypothesis**: Higher IV ratio at entry → better P&L (short-term options more "expensive" relative to long-term)
+
+---
+
 ## Getting Started
 
 ### Installation
