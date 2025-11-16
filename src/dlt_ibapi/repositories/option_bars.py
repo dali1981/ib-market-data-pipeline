@@ -108,11 +108,15 @@ class OptionBarsReader(ParquetReaderBase):
                 (pc.field("bar_size") == bar_size)
             )
 
+            # Note: 'date' column is stored as string in format 'YYYYMMDD X'
+            # where X is a flag (0 or 1), so we compare against 'YYYYMMDD'
             if start_date:
-                filter_expr = filter_expr & (pc.field("date") >= pa.scalar(start_date))
+                date_str = start_date.strftime('%Y%m%d')
+                filter_expr = filter_expr & (pc.field("date") >= date_str)
 
             if end_date:
-                filter_expr = filter_expr & (pc.field("date") <= pa.scalar(end_date))
+                date_str = end_date.strftime('%Y%m%d')
+                filter_expr = filter_expr & (pc.field("date") <= date_str)
 
             df = self._query_with_pyarrow(
                 columns=None,  # Select all columns
@@ -146,12 +150,14 @@ class OptionBarsReader(ParquetReaderBase):
             }
 
             if start_date:
-                where_clauses.append("DATE(time) >= $start_date")
-                params["start_date"] = start_date
+                # Convert date to string for comparison with string date column
+                where_clauses.append("date >= $start_date")
+                params["start_date"] = start_date.strftime('%Y%m%d')
 
             if end_date:
-                where_clauses.append("DATE(time) <= $end_date")
-                params["end_date"] = end_date
+                # Convert date to string for comparison with string date column
+                where_clauses.append("date <= $end_date")
+                params["end_date"] = end_date.strftime('%Y%m%d')
 
             where_sql = " AND ".join(where_clauses)
 
