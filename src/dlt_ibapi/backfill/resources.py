@@ -1102,10 +1102,10 @@ def select_option_contracts_resource(
                         for contract in selected:
                             opt_contract = make_option(
                                 symbol=symbol,
-                                lastTradeDateOrContractMonth=expiry.strftime("%Y%m%d"),
+                                last_trade_date=expiry.strftime("%Y%m%d"),
                                 strike=contract["strike"],
                                 right=contract["right"],
-                                exchange="SMART",
+                                exch="SMART",
                             )
 
                             try:

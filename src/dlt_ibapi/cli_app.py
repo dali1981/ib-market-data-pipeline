@@ -984,6 +984,94 @@ def backfill_equity(
 
 
 @app.command()
+def backfill_ticks(
+    symbol: str = typer.Argument(..., help="Underlying symbol (e.g., AAPL)"),
+    expiry: str = typer.Argument(..., help="Expiration date (YYYYMMDD)"),
+    strike: float = typer.Argument(..., help="Strike price"),
+    right: str = typer.Argument(..., help="Option right (C or P)"),
+    start: str = typer.Option(..., "--start", help="Start datetime (YYYY-MM-DD HH:MM)"),
+    end: str = typer.Option(..., "--end", help="End datetime (YYYY-MM-DD HH:MM)"),
+    tick_type: str = typer.Option("bid_ask", "--tick-type", help="Tick type: bid_ask or trades"),
+    exchange: str = typer.Option("SMART", "--exchange", help="Exchange"),
+    currency: str = typer.Option("USD", "--currency", help="Currency"),
+    use_rth: bool = typer.Option(True, "--use-rth/--no-rth", help="Use regular trading hours only"),
+    data_dir: str = typer.Option("./data_delta", "--data-dir", help="Data directory path"),
+    dataset: str = typer.Option("option_ticks", "--dataset", help="Dataset name"),
+    pipeline_name: str = typer.Option("ib_tick_backfill", "--pipeline-name", help="DLT pipeline name"),
+):
+    """
+    Backfill tick-by-tick data for an option contract.
+
+    Fetches historical tick data from Interactive Brokers for precise
+    execution analysis (bid/ask spreads, trade volumes).
+
+    Example:
+        dlt-ibapi backfill-ticks TMC 20251121 5.0 C \\
+          --start "2025-11-12 15:50" \\
+          --end "2025-11-12 16:00" \\
+          --tick-type bid_ask
+    """
+    from .cli.models import BackfillTicksParams
+    from .cli.ticks import execute_backfill_ticks
+
+    try:
+        # Parse dates
+        expiry_date = datetime.strptime(expiry, '%Y%m%d').date()
+        start_dt = datetime.strptime(start, '%Y-%m-%d %H:%M')
+        end_dt = datetime.strptime(end, '%Y-%m-%d %H:%M')
+
+        # Validate tick_type
+        if tick_type not in ['bid_ask', 'trades']:
+            console.print(f"[red]Error: tick_type must be 'bid_ask' or 'trades', got '{tick_type}'[/red]")
+            raise typer.Exit(1)
+
+        # Validate right
+        if right.upper() not in ['C', 'P']:
+            console.print(f"[red]Error: right must be 'C' or 'P', got '{right}'[/red]")
+            raise typer.Exit(1)
+
+        # Create parameters
+        params = BackfillTicksParams(
+            symbol=symbol.upper(),
+            expiry=expiry_date,
+            strike=strike,
+            right=right.upper(),
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            tick_type=tick_type,
+            exchange=exchange,
+            currency=currency,
+            use_rth=use_rth,
+            database_path=Path(data_dir),
+            dataset_name=dataset,
+            pipeline_name=pipeline_name,
+        )
+
+        console.print(f"\n[bold]Backfilling {tick_type} ticks for {symbol} ${strike}{right.upper()} exp {expiry}[/bold]")
+        console.print(f"Time window: {start_dt} to {end_dt}\n")
+
+        # Execute backfill
+        result = execute_backfill_ticks(params)
+
+        # Display results
+        if result.success:
+            console.print(f"[green]✓ Backfill complete[/green]")
+            console.print(f"Loaded {result.ticks_loaded:,} ticks in {result.duration_seconds:.1f}s")
+            console.print(f"Time range: {result.time_range}")
+            console.print(f"Data saved to: {data_dir}/{dataset}/")
+        else:
+            console.print(f"[red]✗ Backfill failed: {result.error}[/red]")
+            raise typer.Exit(1)
+
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Unexpected error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
 def list_snapshots(
     symbol: Optional[str] = typer.Argument(None, help="Symbol to list snapshots for"),
     data_dir: str = typer.Option("./data", "--data-dir", help="Data directory path"),

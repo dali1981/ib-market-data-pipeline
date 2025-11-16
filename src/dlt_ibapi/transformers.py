@@ -1,7 +1,7 @@
 """Data transformation utilities for normalizing IB API data for DLT."""
 
-from typing import Any, Dict
-from datetime import datetime
+from typing import Any, Dict, Literal
+from datetime import datetime, date
 
 
 def normalize_bar_data(
@@ -202,6 +202,72 @@ def normalize_tick_data(tick: Dict[str, Any], symbol: str, contract_id: int) -> 
             "vega": tick.get("vega"),
             "theta": tick.get("theta"),
             "under_price": tick.get("underPrice"),
+        }
+    else:
+        return base
+
+
+def normalize_historical_tick_data(
+    tick: Any,
+    underlying: str,
+    expiry: date,
+    strike: float,
+    right: str,
+    tick_type: Literal['BID_ASK', 'TRADES', 'MIDPOINT']
+) -> Dict[str, Any]:
+    """
+    Normalize historical tick data from HistoricalTick object to DLT schema.
+
+    This is different from normalize_tick_data which handles real-time streaming ticks.
+
+    Args:
+        tick: HistoricalTick object from ib-connector
+        underlying: Underlying symbol
+        expiry: Expiration date
+        strike: Strike price
+        right: 'C' or 'P'
+        tick_type: Type of tick data
+
+    Returns:
+        Dictionary matching tick schema for DLT
+    """
+    base = {
+        "tick_time": tick.time.isoformat() if hasattr(tick.time, 'isoformat') else str(tick.time),
+        "underlying": underlying,
+        "expiry": expiry.isoformat(),
+        "strike": strike,
+        "right": right.upper(),
+        "date": tick.time.date().isoformat() if hasattr(tick.time, 'date') else tick.time[:10],
+        "symbol": underlying,
+    }
+
+    if tick_type == 'BID_ASK':
+        midpoint = (tick.bid_price + tick.ask_price) / 2 if tick.bid_price and tick.ask_price else None
+        spread = tick.ask_price - tick.bid_price if tick.bid_price and tick.ask_price else None
+        spread_pct = (spread / midpoint * 100) if spread and midpoint else None
+
+        return {
+            **base,
+            "bid_price": tick.bid_price,
+            "ask_price": tick.ask_price,
+            "bid_size": tick.bid_size,
+            "ask_size": tick.ask_size,
+            "spread": spread,
+            "spread_pct": spread_pct,
+            "midpoint": midpoint,
+        }
+    elif tick_type == 'TRADES':
+        return {
+            **base,
+            "price": tick.price,
+            "size": tick.size,
+            "exchange": tick.exchange or "",
+            "special_conditions": tick.special_conditions or "",
+        }
+    elif tick_type == 'MIDPOINT':
+        return {
+            **base,
+            "price": tick.price,
         }
     else:
         return base

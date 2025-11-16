@@ -8,6 +8,7 @@ from .equity_bars import EquityBarsReader
 from .selected_contracts import SelectedContractsReader
 from .dataset_stats import DatasetStatsReader
 from .earnings_calendar import EarningsCalendarReader
+from .option_ticks import OptionTicksReader
 
 __all__ = [
     "BaseReader",
@@ -18,4 +19,5 @@ __all__ = [
     "SelectedContractsReader",
     "DatasetStatsReader",
     "EarningsCalendarReader",
+    "OptionTicksReader",
 ]

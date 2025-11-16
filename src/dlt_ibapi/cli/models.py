@@ -11,9 +11,9 @@ Pattern: Use frozen=True for immutability, Field for validation.
 """
 
 from pydantic import BaseModel, Field, field_validator, ConfigDict
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal
 
 
 def _get_default_database_path() -> Path:
@@ -450,3 +450,47 @@ class ResolveContractsResult(BaseModel):
     cache_path: Path = Field(..., description="Path to contract cache")
     duration_seconds: float = Field(..., ge=0, description="Duration of operation")
     error: Optional[str] = Field(default=None, description="Overall error message if failed")
+
+
+# Tick Backfill Models
+
+class BackfillTicksParams(BaseModel):
+    """Parameters for tick data backfill operation."""
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(..., min_length=1, description="Underlying symbol")
+    expiry: date = Field(..., description="Option expiration date")
+    strike: float = Field(..., gt=0, description="Strike price")
+    right: Literal['C', 'P'] = Field(..., description="Option right (C or P)")
+    start_datetime: datetime = Field(..., description="Start datetime for tick data")
+    end_datetime: datetime = Field(..., description="End datetime for tick data")
+    tick_type: Literal['bid_ask', 'trades'] = Field('bid_ask', description="Type of tick data")
+    exchange: str = Field('SMART', description="Exchange")
+    currency: str = Field('USD', description="Currency")
+    use_rth: bool = Field(True, description="Use regular trading hours only")
+    database_path: Path = Field(default_factory=_get_default_database_path, description="Path to database")
+    dataset_name: str = Field('option_ticks', description="Dataset name")
+    pipeline_name: str = Field('ib_tick_backfill', description="DLT pipeline name")
+
+    @field_validator('end_datetime')
+    @classmethod
+    def validate_datetime_range(cls, v: datetime, info) -> datetime:
+        """Ensure end_datetime is after start_datetime."""
+        start_datetime = info.data.get('start_datetime')
+        if start_datetime and v <= start_datetime:
+            raise ValueError('end_datetime must be after start_datetime')
+        return v
+
+
+class BackfillTicksResult(BaseModel):
+    """Result of tick backfill operation."""
+    success: bool = Field(..., description="Whether backfill succeeded")
+    symbol: str = Field(..., description="Underlying symbol")
+    expiry: str = Field(..., description="Expiration date")
+    strike: float = Field(..., description="Strike price")
+    right: str = Field(..., description="Option right")
+    tick_type: str = Field(..., description="Type of tick data")
+    ticks_loaded: int = Field(..., ge=0, description="Number of ticks loaded")
+    time_range: str = Field(..., description="Time range of ticks")
+    duration_seconds: float = Field(..., ge=0, description="Duration of backfill")
+    error: Optional[str] = Field(default=None, description="Error message if failed")
