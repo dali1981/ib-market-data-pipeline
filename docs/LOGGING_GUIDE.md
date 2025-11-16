@@ -42,6 +42,11 @@ By default (no logging flags):
 
 ## Quick Start
 
+> **Important**: Global logging options (`--verbose`, `--quiet`, `--json-logs`, `--log-file`) must be placed **before** the command name.
+>
+> **Correct**: `dlt-ibapi --verbose backfill-options ...`
+> **Wrong**: `dlt-ibapi backfill-options ... --verbose`
+
 ### Basic Usage (Console Logging)
 
 ```bash
@@ -52,33 +57,33 @@ dlt-ibapi backfill-options AAPL 150.0 --mode atm
 ### Enable Debug Logging
 
 ```bash
-# See all DEBUG messages
-dlt-ibapi backfill-options AAPL 150.0 --verbose
+# See all DEBUG messages (--verbose BEFORE command name)
+dlt-ibapi --verbose backfill-options AAPL 150.0 --mode atm
 # or
-dlt-ibapi backfill-options AAPL 150.0 -v
+dlt-ibapi -v backfill-options AAPL 150.0 --mode atm
 ```
 
 ### Quiet Mode (Warnings/Errors Only)
 
 ```bash
-# Only show WARNING and ERROR
-dlt-ibapi backfill-options AAPL 150.0 --quiet
+# Only show WARNING and ERROR (--quiet BEFORE command name)
+dlt-ibapi --quiet backfill-options AAPL 150.0 --mode atm
 # or
-dlt-ibapi backfill-options AAPL 150.0 -q
+dlt-ibapi -q backfill-options AAPL 150.0 --mode atm
 ```
 
 ### Log to File
 
 ```bash
-# Write logs to file with automatic rotation
-dlt-ibapi backfill-options AAPL 150.0 --log-file backfill.log
+# Write logs to file with automatic rotation (--log-file BEFORE command name)
+dlt-ibapi --log-file backfill.log backfill-options AAPL 150.0 --mode atm
 ```
 
 ### JSON Output (for Production/Monitoring)
 
 ```bash
-# Structured JSON logs
-dlt-ibapi backfill-options AAPL 150.0 --json-logs
+# Structured JSON logs (--json-logs BEFORE command name)
+dlt-ibapi --json-logs backfill-options AAPL 150.0 --mode atm
 ```
 
 ---
@@ -273,11 +278,10 @@ Structured event names follow snake_case convention:
 ### Option Backfill (Single Symbol)
 
 ```bash
-# Debug logs + file output
-dlt-ibapi backfill-options AAPL 150.0 \
-  --mode atm --k-strikes 3 \
-  --verbose \
-  --log-file logs/aapl_backfill.log
+# Debug logs + file output (global options BEFORE command)
+dlt-ibapi --verbose --log-file logs/aapl_backfill.log \
+  backfill-options AAPL 150.0 \
+  --mode atm --k-strikes 3
 ```
 
 **Log events**:
@@ -292,12 +296,11 @@ options_backfill_complete
 ### Option Backfill (Earnings Batch)
 
 ```bash
-# JSON logs for monitoring + file rotation
-dlt-ibapi backfill-options --earnings-date 2025-11-13 \
+# JSON logs for monitoring + file rotation (global options BEFORE command)
+dlt-ibapi --json-logs --log-file logs/earnings_batch.json \
+  backfill-options --earnings-date 2025-11-13 \
   --symbols AAPL,MSFT,GOOGL \
-  --k-expirations 6 --k-strikes 5 \
-  --json-logs \
-  --log-file logs/earnings_batch.json
+  --k-expirations 6 --k-strikes 5
 ```
 
 **Log events**:

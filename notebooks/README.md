@@ -119,6 +119,8 @@ Interactive Jupyter notebooks demonstrating the usage of `dlt-ibapi` for fetchin
 
 **Data**: Uses **5-minute bars** for more precise entry/exit timing
 
+**Timing**: Entry 3:00pm, Exit 10:00am (same as 06)
+
 **Key Differences from 06**:
 - **Granularity**: 5-min bars vs hourly
 - **Precision**: Entry at 3:00pm bar (not 3:00-4:00pm hourly bar)
@@ -131,6 +133,49 @@ Interactive Jupyter notebooks demonstrating the usage of `dlt-ibapi` for fetchin
 - Use **06** for broader coverage including less liquid symbols (hourly fallback)
 
 **Best For**: High-precision analysis on liquid earnings options
+
+**Prerequisites**: Earnings and 5-min option data
+
+---
+
+### 6c. IV Ratio Ranking - Adjusted Entry/Exit Times (`06c_iv_ratio_ranking_adjusted_times.ipynb`)
+
+**Purpose**: Same as 06b, but with **realistic entry/exit times** for better execution.
+
+**Data**: Uses **5-minute bars**
+
+**Timing**:
+- **Entry**: 3:55pm (5 minutes before close)
+- **Exit**: 9:35am (5 minutes after open)
+
+**Rationale**:
+
+**Entry at 3:55pm** (instead of 3:00pm):
+- Avoids 4:00pm closing auction volatility
+- Still captures elevated IV before earnings
+- More realistic execution (tighter spreads than last-minute rush)
+- Less exposure to end-of-day order imbalances
+
+**Exit at 9:35am** (instead of 10:00am):
+- Captures overnight IV crush after AFTER_HOURS earnings
+- Avoids 9:30am opening volatility spike
+- First 5 minutes often chaotic - this waits for market to settle
+- Earlier exit = less time decay, more conservative
+
+**When to Use**:
+- **Production/Live Trading**: Most realistic times for actual execution
+- **Price Realism Analysis**: Tests if strategy works with executable prices
+- **Conservative Analysis**: Earlier exit may show lower P&L but more realistic
+
+**Comparison**:
+
+| Version | Entry | Exit | Best For |
+|---------|-------|------|----------|
+| 06 | 3:00pm | 10:00am | Broad coverage, simple analysis |
+| 06b | 3:00pm | 10:00am | Precision with 5-min data |
+| **06c** | **3:55pm** | **9:35am** | **Realistic execution timing** |
+
+**Best For**: Validating strategy with production-ready timing
 
 **Prerequisites**: Earnings and 5-min option data
 

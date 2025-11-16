@@ -35,6 +35,7 @@ ENV/
 
 # DLT data and cache
 data/
+data_*/
 .dlt/
 .dlt-ibapi/
 

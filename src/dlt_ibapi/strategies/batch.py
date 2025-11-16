@@ -130,7 +130,13 @@ def run_batch_calendar_spread_backtest(
     option_type: Literal['C', 'P'] = 'C',
     bar_size: str = '1 hour',
     progress: bool = True,
-    calculate_iv: bool = False
+    calculate_iv: bool = False,
+    entry_hour: int = 15,
+    entry_minute: int = 0,
+    exit_hour_after_hours: int = 10,
+    exit_minute_after_hours: int = 0,
+    exit_hour_pre_market: int = 16,
+    exit_minute_pre_market: int = 0,
 ) -> pd.DataFrame:
     """
     Run calendar spread backtest across multiple earnings events.
@@ -291,6 +297,12 @@ def run_batch_calendar_spread_backtest(
                 long_expiry=long_exp,
                 spot_price=spot_price if calculate_iv else None,
                 calculate_iv=calculate_iv,
+                entry_hour=entry_hour,
+                entry_minute=entry_minute,
+                exit_hour_after_hours=exit_hour_after_hours,
+                exit_minute_after_hours=exit_minute_after_hours,
+                exit_hour_pre_market=exit_hour_pre_market,
+                exit_minute_pre_market=exit_minute_pre_market,
             )
 
             if result.success:

@@ -149,38 +149,62 @@ def select_calendar_expirations(
 
 def calculate_entry_exit_times(
     earnings_date: date,
-    earnings_time: Literal['PRE_MARKET', 'AFTER_HOURS', 'UNKNOWN']
+    earnings_time: Literal['PRE_MARKET', 'AFTER_HOURS', 'UNKNOWN'],
+    entry_hour: int = 15,
+    entry_minute: int = 0,
+    exit_hour_after_hours: int = 10,
+    exit_minute_after_hours: int = 0,
+    exit_hour_pre_market: int = 16,
+    exit_minute_pre_market: int = 0,
 ) -> Tuple[datetime, datetime]:
     """
     Calculate entry and exit datetimes for calendar spread.
 
     Entry Strategy:
-    - Always enter at 3pm the day before earnings
+    - Default: Enter at 3:00pm (15:00) the day before earnings
+    - Customizable via entry_hour and entry_minute parameters
 
     Exit Strategy (after earnings to capture IV crush):
-    - AFTER_HOURS or UNKNOWN: Exit at 10am next day (after IV crush overnight)
-    - PRE_MARKET: Exit at 4pm on earnings day (after IV crush during day)
+    - AFTER_HOURS or UNKNOWN: Default exit at 10:00am next day (after IV crush overnight)
+    - PRE_MARKET: Default exit at 4:00pm (16:00) on earnings day (after IV crush during day)
+    - Customizable via exit_hour_* and exit_minute_* parameters
 
     Args:
         earnings_date: Date of earnings announcement
         earnings_time: When earnings will be announced
+        entry_hour: Hour of entry (0-23), default 15 (3pm)
+        entry_minute: Minute of entry (0-59), default 0
+        exit_hour_after_hours: Exit hour for AFTER_HOURS earnings (0-23), default 10 (10am)
+        exit_minute_after_hours: Exit minute for AFTER_HOURS earnings (0-59), default 0
+        exit_hour_pre_market: Exit hour for PRE_MARKET earnings (0-23), default 16 (4pm)
+        exit_minute_pre_market: Exit minute for PRE_MARKET earnings (0-59), default 0
 
     Returns:
         Tuple of (entry_dt, exit_dt)
 
-    Example:
+    Examples:
+        >>> # Default times
         >>> calculate_entry_exit_times(date(2025, 11, 13), 'AFTER_HOURS')
         (datetime(2025, 11, 12, 15, 0, 0), datetime(2025, 11, 14, 10, 0, 0))
+
+        >>> # Custom times: Enter 3:55pm, exit 9:35am
+        >>> calculate_entry_exit_times(date(2025, 11, 13), 'AFTER_HOURS',
+        ...                            entry_hour=15, entry_minute=55,
+        ...                            exit_hour_after_hours=9, exit_minute_after_hours=35)
+        (datetime(2025, 11, 12, 15, 55, 0), datetime(2025, 11, 14, 9, 35, 0))
     """
-    # Entry: 3pm day before earnings
-    entry_dt = datetime.combine(earnings_date, datetime.min.time()) - timedelta(days=1) + timedelta(hours=15)
+    # Entry: specified time day before earnings
+    entry_dt = datetime.combine(earnings_date, datetime.min.time()) - timedelta(days=1) + \
+               timedelta(hours=entry_hour, minutes=entry_minute)
 
     if earnings_time == 'PRE_MARKET':
-        # Exit after PRE_MARKET earnings: Market close on earnings day (4pm)
-        exit_dt = datetime.combine(earnings_date, datetime.min.time()) + timedelta(hours=16)
+        # Exit after PRE_MARKET earnings: specified time on earnings day
+        exit_dt = datetime.combine(earnings_date, datetime.min.time()) + \
+                 timedelta(hours=exit_hour_pre_market, minutes=exit_minute_pre_market)
     else:  # AFTER_HOURS or UNKNOWN
-        # Exit after AFTER_HOURS earnings: Next trading day 10am
-        exit_dt = datetime.combine(earnings_date, datetime.min.time()) + timedelta(days=1, hours=10)
+        # Exit after AFTER_HOURS earnings: specified time next trading day
+        exit_dt = datetime.combine(earnings_date, datetime.min.time()) + \
+                 timedelta(days=1, hours=exit_hour_after_hours, minutes=exit_minute_after_hours)
 
     return (entry_dt, exit_dt)
 
@@ -293,6 +317,12 @@ def backtest_single_calendar_spread(
     long_expiry: date,
     spot_price: Optional[float] = None,
     calculate_iv: bool = False,
+    entry_hour: int = 15,
+    entry_minute: int = 0,
+    exit_hour_after_hours: int = 10,
+    exit_minute_after_hours: int = 0,
+    exit_hour_pre_market: int = 16,
+    exit_minute_pre_market: int = 0,
 ) -> CalendarSpreadResult:
     """
     Backtest a single calendar spread for one earnings event.
@@ -331,7 +361,14 @@ def backtest_single_calendar_spread(
     """
     # Calculate entry/exit times
     entry_dt, exit_dt = calculate_entry_exit_times(
-        earnings_date, earnings_time
+        earnings_date=earnings_date,
+        earnings_time=earnings_time,
+        entry_hour=entry_hour,
+        entry_minute=entry_minute,
+        exit_hour_after_hours=exit_hour_after_hours,
+        exit_minute_after_hours=exit_minute_after_hours,
+        exit_hour_pre_market=exit_hour_pre_market,
+        exit_minute_pre_market=exit_minute_pre_market,
     )
 
     # Get entry prices
