@@ -249,6 +249,41 @@ uv run ruff check .
 uv run ruff check --fix .
 ```
 
+### Logging
+
+dlt-ibapi uses [structlog](https://www.structlog.org/) for structured logging. See [docs/LOGGING_GUIDE.md](docs/LOGGING_GUIDE.md) for complete documentation.
+
+**Common logging options**:
+```bash
+# Debug logging (see all details)
+uv run dlt-ibapi backfill-options AAPL 150.0 --verbose
+
+# Quiet mode (warnings/errors only)
+uv run dlt-ibapi backfill-options AAPL 150.0 --quiet
+
+# Log to file with rotation (10MB max, 5 backups)
+uv run dlt-ibapi backfill-options AAPL 150.0 --log-file logs/backfill.log
+
+# JSON structured logs (for monitoring)
+uv run dlt-ibapi backfill-options AAPL 150.0 --json-logs
+
+# Combine options
+uv run dlt-ibapi backfill-options --earnings-date 2025-11-13 \
+  --verbose --json-logs --log-file logs/earnings_batch.json
+```
+
+**Log levels**:
+- `--verbose` (`-v`): DEBUG level (detailed diagnostics)
+- Default: INFO level (normal operation info)
+- `--quiet` (`-q`): WARNING/ERROR only (production use)
+
+**Structured events**: Logs use key-value pairs for context:
+```
+spot_price_selected: symbol=AAPL, earnings_time=PRE_MARKET, spot_price_date=2025-11-12, spot_price=180.50
+```
+
+**File rotation**: Automatically rotates at 10MB (keeps 5 backup files)
+
 ### CLI Usage
 
 ```bash

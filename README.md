@@ -1953,12 +1953,12 @@ dlt-ibapi version           # Show version
 
 All major commands now support:
 
-**Logging Options**:
+**Logging Options** (see [Logging Guide](docs/LOGGING_GUIDE.md) for details):
 ```bash
 --verbose, -v          # Enable DEBUG logging
---quiet, -q            # Suppress INFO logs
---log-file FILE        # Write logs to file with rotation
---json-logs            # Output structured JSON logs
+--quiet, -q            # Suppress INFO logs (warnings/errors only)
+--log-file FILE        # Write logs to file with rotation (10MB max, 5 backups)
+--json-logs            # Output structured JSON logs (for monitoring/aggregation)
 ```
 
 **Operational Safety**:
