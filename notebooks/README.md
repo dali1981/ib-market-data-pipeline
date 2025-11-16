@@ -96,6 +96,8 @@ Interactive Jupyter notebooks demonstrating the usage of `dlt-ibapi` for fetchin
 
 **Purpose**: Rank trading opportunities by implied volatility ratio to predict profitability.
 
+**Data**: Uses **hourly bars** for compatibility across all symbols
+
 **Topics Covered**:
 - Calculating IV for short and long legs at entry
 - Computing IV ratio (short IV / long IV)
@@ -108,6 +110,29 @@ Interactive Jupyter notebooks demonstrating the usage of `dlt-ibapi` for fetchin
 **Prerequisites**: Earnings and option data
 
 **Key Hypothesis**: Higher IV ratio at entry → better P&L (short-term options more "expensive" relative to long-term)
+
+---
+
+### 6b. IV Ratio Ranking - 5-Minute Bars (`06b_iv_ratio_ranking_5min.ipynb`)
+
+**Purpose**: Same as 06, but with higher precision using 5-minute bars.
+
+**Data**: Uses **5-minute bars** for more precise entry/exit timing
+
+**Key Differences from 06**:
+- **Granularity**: 5-min bars vs hourly
+- **Precision**: Entry at 3:00pm bar (not 3:00-4:00pm hourly bar)
+- **Volume**: Shows when trades actually occurred within the hour
+- **Spreads**: More accurate high-low ranges for spread estimation
+- **Coverage**: May have fewer successful backtests (some symbols lack 5-min data)
+
+**When to Use**:
+- Use **06b** for liquid symbols with 5-min data (more precise analysis)
+- Use **06** for broader coverage including less liquid symbols (hourly fallback)
+
+**Best For**: High-precision analysis on liquid earnings options
+
+**Prerequisites**: Earnings and 5-min option data
 
 ---
 
