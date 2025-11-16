@@ -29,6 +29,10 @@ class OptionTicksReader(ParquetReaderBase):
         """
         super().__init__(database_path, dataset_name)
 
+    def _get_table_name(self) -> str:
+        """Table name for option ticks (default to bid_ask)."""
+        return "option_ticks_bid_ask"
+
     def get_ticks(
         self,
         underlying: str,
@@ -71,7 +75,7 @@ class OptionTicksReader(ParquetReaderBase):
 
         query = f"""
             SELECT *
-            FROM parquet_scan('{self.data_path}/{table_name}/**/*.parquet',
+            FROM parquet_scan('{self.data_root}/{table_name}/**/*.parquet',
                             hive_partitioning=true)
             WHERE underlying = '{underlying}'
               AND expiry = '{expiry.isoformat()}'
@@ -82,7 +86,7 @@ class OptionTicksReader(ParquetReaderBase):
             ORDER BY tick_time
         """
 
-        return self._execute_query(query)
+        return self._query_with_duckdb(query)
 
     def get_spread_at_time(
         self,
@@ -286,9 +290,9 @@ class OptionTicksReader(ParquetReaderBase):
                 expiry,
                 strike,
                 "right"
-            FROM parquet_scan('{self.data_path}/{table_name}/**/*.parquet',
+            FROM parquet_scan('{self.data_root}/{table_name}/**/*.parquet',
                             hive_partitioning=true)
             ORDER BY underlying, expiry, strike, "right"
         """
 
-        return self._execute_query(query)
+        return self._query_with_duckdb(query)
