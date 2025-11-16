@@ -10,13 +10,14 @@ End-to-end workflow for acquiring market data via dlt-ibapi CLI.
 
 ## Overview
 
-The complete data acquisition workflow has 5 main steps:
+The complete data acquisition workflow has 6 main steps:
 
 1. **Load Earnings Calendar** - Import earnings announcement dates
 2. **Resolve Contracts** - Validate symbols and pre-populate contract cache
 3. **Capture Option Snapshots** - Get option chain metadata (strikes/expirations)
 4. **Backfill Equity Bars** - Get underlying stock prices (for spot prices)
 5. **Backfill Option Bars** - Get historical OHLCV data for option contracts
+6. **⚠️ TODO: Price Realism Validation** - Verify execution feasibility with volume/spread analysis
 
 ## Step-by-Step Workflow
 
@@ -262,6 +263,12 @@ dlt-ibapi backfill-options --earnings-date ${EARNINGS_DATE} \
   --end ${END_DATE} \
   --client-id 2
 
+echo "=== Step 7: Price Realism Validation (TODO) ==="
+# TODO: Implement this CLI command
+# dlt-ibapi validate-prices --symbols TMC BZH BNTC \
+#   --date 2025-11-13 \
+#   --output price_analysis.csv
+
 echo "=== Verify Data ==="
 dlt-ibapi stats ./data_delta --dataset earnings
 dlt-ibapi stats ./data_delta --dataset stocks
@@ -270,6 +277,55 @@ dlt-ibapi stats ./data_delta --dataset options
 
 echo "=== Done! ==="
 ```
+
+---
+
+### Step 7: Price Realism Validation ⚠️ TODO
+
+**Status**: Not yet implemented
+
+**Purpose**: Validate that option prices used in backtests reflect realistic execution by analyzing volume, spreads, and price movements.
+
+**Planned CLI command**:
+```bash
+dlt-ibapi validate-prices --symbols TMC BZH BNTC \
+  --date 2025-11-13 \
+  --output price_realism_report.csv
+```
+
+**What this will do:**
+- Load successful backtests for specified symbols/date
+- Extract entry hour data (3pm day before earnings)
+- Extract exit hour data (10am or 4pm after earnings)
+- Analyze:
+  - Open/close prices for entry and exit hours
+  - Volume during entry/exit hours
+  - Bid/ask spreads (if available in data)
+  - Price gaps (pre-earnings close → post-earnings open)
+  - IV crush differential (short vs long leg gaps)
+- Calculate adjusted P&L accounting for spreads:
+  - Conservative: buy at ask, sell at bid
+  - Realistic: mid-price execution
+  - Optimistic: close price (current assumption)
+- Generate report with:
+  - Entry/exit realism flags
+  - Volume/liquidity scores
+  - Adjusted P&L estimates
+  - Tradeable subset identification
+
+**Output format** (CSV):
+```
+symbol,strike,entry_time,exit_time,
+entry_volume_total,exit_volume_total,
+entry_spread_est,exit_spread_est,
+short_gap_pct,long_gap_pct,iv_crush_diff,
+pnl_original,pnl_conservative,pnl_realistic,
+entry_realistic,exit_realistic,tradeable
+```
+
+**See specs**: `notebooks/SPECS_PRICE_REALISM_ANALYSIS.md`
+
+---
 
 ---
 
