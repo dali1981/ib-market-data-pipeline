@@ -211,15 +211,15 @@ class OptionBarsReader(ParquetReaderBase):
                 underlying,
                 expiry,
                 strike,
-                right,
+                "right",
                 bar_size,
                 MIN(time) as first_bar,
                 MAX(time) as last_bar,
                 COUNT(*) as bar_count
             FROM {table_name}
             WHERE {where_sql}
-            GROUP BY underlying, expiry, strike, right, bar_size
-            ORDER BY expiry, strike, right
+            GROUP BY underlying, expiry, strike, "right", bar_size
+            ORDER BY expiry, strike, "right"
         """
 
         return self._query_with_duckdb(query, params)
@@ -260,3 +260,128 @@ class OptionBarsReader(ParquetReaderBase):
 
         df = self._query_with_duckdb(query, params)
         return df["expiry"].tolist() if not df.empty else []
+
+    def get_available_symbols(self) -> List[str]:
+        """
+        Get list of underlying symbols with option data.
+        Uses DuckDB for efficient metadata query.
+
+        Returns:
+            List of underlying symbols sorted alphabetically
+        """
+        table_name = self._get_table_name()
+
+        query = f"""
+            SELECT DISTINCT underlying
+            FROM {table_name}
+            ORDER BY underlying
+        """
+
+        df = self._query_with_duckdb(query, {})
+        return df["underlying"].tolist() if not df.empty else []
+
+    def get_expirations_for_contract(
+        self,
+        underlying: str,
+        strike: float,
+        option_type: str,
+        bar_size: str = "1 hour",
+    ) -> List[date]:
+        """
+        Get available expirations for specific contract parameters.
+
+        Args:
+            underlying: Underlying symbol
+            strike: Strike price
+            option_type: 'C' for calls, 'P' for puts
+            bar_size: Bar size to filter (default "1 hour")
+
+        Returns:
+            List of expiration dates sorted chronologically
+        """
+        table_name = self._get_table_name()
+
+        query = f"""
+            SELECT DISTINCT expiry
+            FROM {table_name}
+            WHERE underlying = $underlying
+              AND strike = $strike
+              AND "right" = $option_type
+              AND bar_size = $bar_size
+            ORDER BY expiry
+        """
+
+        params = {
+            "underlying": underlying.upper(),
+            "strike": strike,
+            "option_type": option_type.upper(),
+            "bar_size": bar_size,
+        }
+
+        df = self._query_with_duckdb(query, params)
+
+        if df.empty:
+            return []
+
+        # Convert to date objects (in case DuckDB returns timestamps)
+        expirations = []
+        for exp in df["expiry"].tolist():
+            if isinstance(exp, pd.Timestamp):
+                expirations.append(exp.date())
+            elif isinstance(exp, date):
+                expirations.append(exp)
+            else:
+                # Try to convert to datetime then extract date
+                expirations.append(pd.to_datetime(exp).date())
+
+        return expirations
+
+    def load_option_leg_bars(
+        self,
+        underlying: str,
+        expiry: date,
+        strike: float,
+        option_type: str,
+        bar_size: str = "1 hour",
+    ) -> Optional[pd.DataFrame]:
+        """
+        Load bars for a single option leg with parsed datetime column.
+
+        This is a convenience method that wraps get_bars() and adds
+        datetime parsing for notebooks/strategies.
+
+        Args:
+            underlying: Underlying symbol
+            expiry: Option expiration date
+            strike: Strike price
+            option_type: 'C' for calls, 'P' for puts
+            bar_size: Bar size (default "1 hour")
+
+        Returns:
+            DataFrame with 'datetime' and price columns, or None if no data
+
+        Example:
+            >>> reader = OptionBarsReader(database_path='./data', dataset_name='options')
+            >>> bars = reader.load_option_leg_bars('AAPL', date(2025, 11, 21), 150.0, 'C')
+            >>> bars[['datetime', 'close']].head()
+        """
+        df = self.get_bars(
+            underlying=underlying,
+            expiry=expiry,
+            strike=strike,
+            right=option_type,
+            bar_size=bar_size,
+            use_pyarrow=False,  # Use DuckDB for parsing
+        )
+
+        if df.empty:
+            return None
+
+        # Parse datetime from time column (format varies by data source)
+        # Typical format: "YYYYMMDD HH:MM:SS" or "YYYYMMDD HH:MM:SS US/Eastern"
+        if 'time' in df.columns:
+            # Strip timezone suffix if present
+            time_str = df['time'].astype(str).str.replace(r' US/Eastern$', '', regex=True)
+            df['datetime'] = pd.to_datetime(time_str, format='%Y%m%d %H:%M:%S')
+
+        return df[['datetime', 'open', 'high', 'low', 'close', 'volume']].sort_values('datetime')

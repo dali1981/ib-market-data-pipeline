@@ -40,6 +40,58 @@ Interactive Jupyter notebooks demonstrating the usage of `dlt-ibapi` for fetchin
 
 ---
 
+### 3. Calendar Spread Strategy - TMC Earnings (`03_calendar_spread_tmc_earnings.ipynb`)
+
+**Purpose**: Demonstrate calendar spread strategy using real TMC earnings data.
+
+**Topics Covered**:
+- Loading hourly option bars for specific contracts
+- Calendar spread construction (sell near-term, buy far-term)
+- P&L tracking over time
+- Exit timing analysis (before vs after earnings)
+- IV crush visualization
+
+**Best For**: Understanding options trading strategies with real data
+
+**Prerequisites**: TMC option data backfilled
+
+---
+
+### 4. Calendar Spread Earnings Backtest (`04_calendar_spread_earnings_backtest.ipynb`)
+
+**Purpose**: Backtest calendar spread strategy across multiple earnings events.
+
+**Topics Covered**:
+- Batch processing of earnings calendar
+- Multi-event strategy backtesting
+- Performance metrics and statistics
+- Win rate and P&L distribution analysis
+
+**Best For**: Evaluating strategy performance across many events
+
+**Prerequisites**: Multiple earnings events and option data
+
+---
+
+### 5. Volatility Term Structure Analysis (`05_volatility_term_structure_earnings.ipynb`)
+
+**Purpose**: Visualize implied volatility collapse around earnings events.
+
+**Topics Covered**:
+- Black-Scholes IV calculation using scipy
+- Volatility smiles (IV across strikes)
+- Volatility term structure (IV across maturities)
+- IV collapse heatmaps
+- Differential IV collapse analysis (calendar spread edge)
+
+**Best For**: Understanding the volatility dynamics that make calendar spreads profitable
+
+**Prerequisites**: Option data around earnings dates
+
+**See Also**: [README_VOL_ANALYSIS.md](./README_VOL_ANALYSIS.md) for detailed documentation
+
+---
+
 ## Getting Started
 
 ### Installation

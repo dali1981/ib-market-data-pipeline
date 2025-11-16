@@ -334,7 +334,8 @@ def backfill_option_bars(
             include_puts=backfill_config.include_puts,
         )
 
-        log.info(f"Selected {len(contracts)} contracts for backfill")
+        log.info("contracts_selected", count=len(contracts))
+        log.debug("selected_contracts", contracts=[(str(e), s, r) for e, s, r in contracts])
 
         # Step 3: Backfill each contract
         hist_svc = HistoricalService(runtime)
@@ -378,11 +379,29 @@ def backfill_option_bars(
                 f"in {plan.api_calls_required} API calls"
             )
 
-            # Resolve contract to get the ACTUAL Contract object from IB
-            # CRITICAL: We must use the Contract object returned by ContractDetails,
-            # not reconstruct it ourselves
+            # Resolve contract (uses cache if available, saves to cache automatically)
             try:
-                # Create partial contract for ContractDetails lookup
+                resolved = resolver.resolve_option_contract(
+                    symbol=underlying,
+                    expiry=expiry.strftime("%Y%m%d"),
+                    strike=strike,
+                    right=right,
+                    exchange="SMART",
+                    currency="USD",
+                    use_cache=True,
+                    save_to_cache=True,  # Automatically persists to cache
+                )
+
+                if not resolved:
+                    log.error(f"No contract details found for {underlying} {expiry} {strike}{right}")
+                    log.warning(f"Skipping contract - does not exist in IB system")
+                    continue
+
+                log.info(f"Resolved contract: conid={resolved['conid']}, local_symbol={resolved.get('local_symbol')}")
+
+                # Create contract from resolved details
+                # Use the resolver's internal method to get the actual Contract object
+                from ib_connector import ContractDetailsService
                 partial_contract = make_option(
                     symbol=underlying,
                     last_trade_date=expiry.strftime("%Y%m%d"),
@@ -390,20 +409,15 @@ def backfill_option_bars(
                     right=right,
                     exch="SMART",
                 )
-
-                # Get full contract details from IB
-                from ib_connector import ContractDetailsService
                 contract_svc = ContractDetailsService(runtime)
                 details_list = contract_svc.fetch(partial_contract, timeout=10.0)
 
                 if not details_list:
-                    log.error(f"No contract details found for {underlying} {expiry} {strike}{right}")
-                    log.warning(f"Skipping contract - does not exist in IB system")
+                    log.error(f"ContractDetails returned empty for {underlying} {expiry} {strike}{right}")
                     continue
 
-                # Use the ACTUAL resolved Contract object from IB
+                # Use the ACTUAL Contract object from ContractDetails (not reconstructed)
                 contract = details_list[0].contract
-                log.info(f"Resolved contract: conid={contract.conId}, local_symbol={contract.localSymbol}")
 
             except Exception as e:
                 log.error(f"Failed to resolve contract {underlying} {expiry} {strike}{right}: {e}")
@@ -452,10 +466,12 @@ def backfill_option_bars(
                             "bar_size": backfill_config.bar_size,
                         })
 
+                        log.debug("yielding_bar", time=record.get('time'), open=record.get('open'),
+                                 close=record.get('close'), volume=record.get('volume'))
                         yield record
                         bar_count += 1
 
-                    log.info(f"Yielded {bar_count} bars for batch {batch_start} to {batch_end}")
+                    log.info("batch_complete", bars_yielded=bar_count, batch_start=str(batch_start), batch_end=str(batch_end))
 
                 except Exception as e:
                     log.error(f"Failed to fetch bars for {batch_start} to {batch_end}: {e}")

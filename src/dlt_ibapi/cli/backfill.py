@@ -368,6 +368,32 @@ def _execute_backfill_options_single(
         logger.info("running_pipeline")
         info = run_pipeline(pipeline, data, storage_config, write_disposition="append")
 
+        # Debug: Extract LoadInfo details
+        logger.info(
+            "pipeline_load_info",
+            has_failed_jobs=info.has_failed_jobs,
+            load_packages_count=len(info.load_packages) if info.load_packages else 0,
+            metrics=dict(info.metrics) if hasattr(info, 'metrics') and info.metrics else None,
+        )
+
+        if info.load_packages:
+            for idx, pkg in enumerate(info.load_packages):
+                logger.info(
+                    "load_package_details",
+                    package_index=idx,
+                    state=pkg.state if hasattr(pkg, 'state') else None,
+                    jobs_count=len(pkg.jobs['completed_jobs']) if hasattr(pkg, 'jobs') and pkg.jobs else 0,
+                    failed_jobs_count=len(pkg.jobs['failed_jobs']) if hasattr(pkg, 'jobs') and pkg.jobs else 0,
+                )
+                if hasattr(pkg, 'jobs') and pkg.jobs:
+                    for job_idx, job in enumerate(pkg.jobs.get('failed_jobs', [])):
+                        logger.error(
+                            "failed_job",
+                            job_index=job_idx,
+                            file_name=job.file_name if hasattr(job, 'file_name') else None,
+                            failed_message=job.failed_message if hasattr(job, 'failed_message') else None,
+                        )
+
         if info.has_failed_jobs:
             warnings.append("Some pipeline jobs failed")
             logger.warning("pipeline_jobs_failed")
