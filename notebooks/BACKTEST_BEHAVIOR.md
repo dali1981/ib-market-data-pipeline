@@ -1,35 +1,62 @@
 # Calendar Spread Backtest Behavior
 
-## System Verification (2025-11-16)
+## System Verification and Fix (2025-11-16)
 
 This document clarifies the expected behavior of calendar spread backtests when option data is missing or incomplete.
 
-## Key Finding: System Working as Designed
+## Update: Strike Selection Fixed
 
-**Investigation Result**: The batch calendar spread backtest system (`run_batch_calendar_spread_backtest()`) is functioning correctly. Warnings about missing option data reflect actual data availability issues, not bugs in the strike selection logic.
+**Investigation Result**: Found and fixed a bug in strike selection logic where symbols were incorrectly rejected when ATM strike didn't have ≥2 expirations, even if other strikes did.
 
-## Nearest Strike Selection Logic
+**Fix Applied**: Now searches ALL available strikes to find the best one with ≥2 expirations after earnings, falling back from ATM to nearest alternative.
 
-The `_find_nearest_available_strike()` function in `src/dlt_ibapi/strategies/batch.py` correctly implements fallback logic:
+## Strike Selection Logic (Fixed 2025-11-16)
 
-1. **Exact Match**: If target ATM strike exists → use it
-2. **Nearest Strike**: If target strike doesn't exist → find closest available strike
-3. **Bar Size Fallback**: If preferred bar size unavailable → use any available bar size
-4. **No Data**: If no strikes available → return None and skip symbol
+The `_find_best_strike_with_sufficient_expirations()` function in `src/dlt_ibapi/strategies/batch.py` implements intelligent fallback logic:
+
+1. **Calculate ATM**: Determine ideal at-the-money strike from spot price
+2. **Count Expirations**: For each available strike, count expirations AFTER earnings date
+3. **Filter Valid Strikes**: Keep only strikes with ≥2 expirations (needed for calendar spread)
+4. **Prefer ATM**: If ATM strike has ≥2 expirations → use it
+5. **Fallback to Nearest**: If ATM insufficient → use nearest strike with ≥2 expirations
+6. **No Valid Strikes**: If no strike has ≥2 expirations → return None and skip symbol
+
+### Example: BZH (Fixed - Previously Failed)
+
+**Before Fix**:
+```
+Processing BZH - 2025-11-13 (AFTER_HOURS)...
+  Spot: $21.40, ATM Strike: $21 ✓
+  ⚠️  Insufficient expirations (need 2, got 1)
+```
+
+**After Fix**:
+```
+Processing BZH - 2025-11-13 (AFTER_HOURS)...
+  Spot: $21.40, ATM Strike: $21 → Using $22.0 (best with ≥2 expirations)
+  ✓ Calendar spread (Spot: $21.40, Strike: $22.0): Entry=$35.00, P&L=$40.00
+```
+
+**What happened**:
+- Spot price: $21.40
+- ATM strike calculated: $21.00
+- Strike $21 expirations: only Nov 21 (1 expiration) ❌
+- Strike $22 expirations: Nov 21, Dec 19 (2 expirations) ✓
+- **System correctly used $22** (nearest with ≥2 expirations)
 
 ### Example: CTRM (Working Correctly)
 
 ```
 Processing CTRM - 2025-11-13 (UNKNOWN)...
-  Spot: $1.93, ATM Strike: $2 → Using $2.5 (nearest available)
-  ✓ Calendar spread: Entry=$25.00, P&L=$-20.00
+  Spot: $1.93, ATM Strike: $2 → Using $2.5 (best with ≥2 expirations)
+  ✓ Calendar spread (Spot: $1.93, Strike: $2.5): Entry=$25.00, P&L=$-20.00
 ```
 
 **What happened**:
 - Spot price: $1.93
 - ATM strike calculated: $2.00
-- Available strikes: `[2.5]` (only $2.5 available)
-- **System correctly used $2.5** (nearest available)
+- Available strikes: only `[2.5]` with ≥2 expirations
+- **System correctly used $2.5** (only valid strike)
 
 ### Example: BNT (Working Correctly)
 
@@ -114,11 +141,20 @@ results_df = run_batch_calendar_spread_backtest(
 ## Success Rate Analysis
 
 For earnings on 2025-11-13:
-- **Total tradable earnings**: 44 symbols
-- **Successful backtests**: 23 (52%)
-- **Failed backtests**: 21 (48%)
 
-**Failure reasons** (all legitimate data issues):
+**Before Fix**:
+- Total tradable earnings: 44 symbols
+- Successful backtests: 23 (52%)
+- Failed backtests: 21 (48%)
+
+**After Fix**:
+- Total tradable earnings: 44 symbols
+- **Successful backtests: 26 (59.1%)**
+- **Failed backtests: 18 (40.9%)**
+
+**Improvement**: +3 backtests successfully added (BZH, BNTC, and 1 more)
+
+**Remaining failure reasons** (all legitimate data issues):
 - Missing call option data (most common)
 - Missing spot price data
 - Insufficient expirations (< 2 required)
