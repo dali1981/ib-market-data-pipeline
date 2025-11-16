@@ -5,6 +5,7 @@ Uses Pydantic models for type safety and dependency injection for I/O.
 """
 
 import time
+from datetime import date
 from typing import Optional, Callable, Any
 from pathlib import Path
 
@@ -434,6 +435,43 @@ def _execute_backfill_options_single(
             warnings=warnings,
         )
 
+def _get_spot_price_date(earnings_date: date, earnings_time: str) -> date:
+    """
+    Determine which date's close price to use for spot price based on earnings timing.
+
+    For pre-market earnings, use previous trading day's close (options priced before market opens).
+    For after-hours/unknown earnings, use same day's close (options priced after market closes).
+
+    Args:
+        earnings_date: Date of earnings announcement
+        earnings_time: "PRE_MARKET", "AFTER_HOURS", or "UNKNOWN"
+
+    Returns:
+        Date to use for equity bar close price lookup
+
+    Example:
+        >>> # Pre-market on Wednesday
+        >>> _get_spot_price_date(date(2025, 11, 13), "PRE_MARKET")
+        datetime.date(2025, 11, 12)  # Previous Tuesday
+
+        >>> # After-hours on Wednesday
+        >>> _get_spot_price_date(date(2025, 11, 13), "AFTER_HOURS")
+        datetime.date(2025, 11, 13)  # Same day
+
+        >>> # Pre-market on Monday (skip weekend)
+        >>> _get_spot_price_date(date(2025, 11, 17), "PRE_MARKET")
+        datetime.date(2025, 11, 14)  # Previous Friday
+    """
+    from dlt_ibapi.backfill.market_calendar import get_previous_trading_day
+
+    if earnings_time == "PRE_MARKET":
+        # Options priced before market open → use previous day's close
+        return get_previous_trading_day(earnings_date)
+    else:
+        # AFTER_HOURS or UNKNOWN → use same day's close
+        return earnings_date
+
+
 def _execute_backfill_options_earnings(
     params: BackfillOptionsParams,
     connection_config: Optional[IBConnectionConfig] = None,
@@ -443,7 +481,7 @@ def _execute_backfill_options_earnings(
 
     This function:
     1. Loads symbols from earnings calendar
-    2. Extracts spot prices from equity bars
+    2. Extracts spot prices from equity bars (earnings-time-aware)
     3. Discovers expirations from option chain snapshots
     4. Filters expirations beyond earnings date
     5. Backfills option bars for all valid (symbol, expiration) pairs
@@ -491,6 +529,56 @@ def _execute_backfill_options_earnings(
 
         symbols = sorted(earnings_df["symbol"].unique().tolist())
         logger.info("loaded_earnings_symbols", count=len(symbols))
+
+        # Apply symbols filter if provided
+        if params.earnings_symbols_filter:
+            original_count = len(symbols)
+            symbols = [s for s in symbols if s in params.earnings_symbols_filter]
+            logger.info(
+                "applied_symbols_filter",
+                original_count=original_count,
+                filtered_count=len(symbols),
+                filter=params.earnings_symbols_filter,
+            )
+
+            # Check if any requested symbols are missing
+            missing_symbols = set(params.earnings_symbols_filter) - set(symbols)
+            if missing_symbols:
+                warnings.append(
+                    f"Requested symbols not found in earnings data: {', '.join(sorted(missing_symbols))}"
+                )
+                logger.warning("missing_filtered_symbols", symbols=sorted(missing_symbols))
+
+            # Check if no symbols remain after filtering
+            if not symbols:
+                logger.error(
+                    "no_symbols_after_filter",
+                    earnings_date=str(params.earnings_date),
+                    filter=params.earnings_symbols_filter,
+                )
+                return BackfillOptionsResult(
+                    success=False,
+                    contracts_processed=0,
+                    total_bars=0,
+                    gaps_filled=0,
+                    pipeline_name=params.pipeline_name,
+                    output_path=params.database_path / params.dataset_name,
+                    duration_seconds=time.time() - start_time,
+                    error=f"No symbols match filter {params.earnings_symbols_filter} on {params.earnings_date}",
+                    warnings=warnings,
+                )
+
+        # Create symbol → earnings_time mapping for spot price selection
+        symbol_earnings_time = {}
+        for _, row in earnings_df.iterrows():
+            symbol_earnings_time[row["symbol"]] = row.get("earnings_time", "UNKNOWN")
+
+        logger.debug(
+            "earnings_time_distribution",
+            pre_market=sum(1 for t in symbol_earnings_time.values() if t == "PRE_MARKET"),
+            after_hours=sum(1 for t in symbol_earnings_time.values() if t == "AFTER_HOURS"),
+            unknown=sum(1 for t in symbol_earnings_time.values() if t == "UNKNOWN"),
+        )
 
         # Step 2: Initialize readers
         equity_reader = EquityBarsReader(
@@ -568,22 +656,46 @@ def _execute_backfill_options_earnings(
             logger.info("processing_symbol_earnings", symbol=symbol)
 
             try:
-                # Get spot price from equity bars (always use "1 day" for spot price, not option bar_size)
-                logger.debug("extracting_spot_price", symbol=symbol)
+                # Get spot price from equity bars based on earnings timing
+                earnings_time = symbol_earnings_time.get(symbol, "UNKNOWN")
+                spot_price_date = _get_spot_price_date(params.earnings_date, earnings_time)
+
+                logger.debug(
+                    "extracting_spot_price",
+                    symbol=symbol,
+                    earnings_time=earnings_time,
+                    spot_price_date=str(spot_price_date),
+                )
+
                 equity_bars = equity_reader.get_bars(
                     symbol=symbol,
                     bar_size="1 day",  # Always use daily bars for spot price extraction
-                    start_date=params.earnings_date - timedelta(days=7),
-                    end_date=params.earnings_date,
+                    start_date=spot_price_date - timedelta(days=7),  # Safety window
+                    end_date=spot_price_date,
                 )
 
                 if equity_bars.empty:
-                    warnings.append(f"No equity data for {symbol} - skipping")
-                    logger.warning("no_equity_data", symbol=symbol)
+                    warnings.append(
+                        f"No equity data for {symbol} on {spot_price_date} "
+                        f"(earnings_time={earnings_time}) - skipping"
+                    )
+                    logger.warning(
+                        "no_equity_data",
+                        symbol=symbol,
+                        spot_price_date=str(spot_price_date),
+                        earnings_time=earnings_time,
+                    )
                     continue
 
                 spot_price = float(equity_bars.iloc[-1]["close"])
-                logger.debug("spot_price_extracted", symbol=symbol, spot_price=spot_price)
+                logger.info(
+                    "spot_price_selected",
+                    symbol=symbol,
+                    earnings_time=earnings_time,
+                    earnings_date=str(params.earnings_date),
+                    spot_price_date=str(spot_price_date),
+                    spot_price=spot_price,
+                )
 
                 # Get expirations from snapshot
                 logger.debug("loading_expirations", symbol=symbol)

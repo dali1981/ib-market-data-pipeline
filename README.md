@@ -356,6 +356,18 @@ dlt-ibapi snapshot AAPL --min-dte 7 --max-dte 60
 
 # Step 2: Backfill
 dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
+
+# Batch backfill all symbols with earnings on specific date
+# Automatically selects spot prices based on earnings timing (pre-market vs after-hours)
+dlt-ibapi backfill-options --earnings-date 2025-11-13 \
+  --k-expirations 6 --k-strikes 5 \
+  --bar-size "5 mins"
+
+# Filter specific symbols when using --earnings-date
+dlt-ibapi backfill-options --earnings-date 2025-11-13 \
+  --symbols AAPL,MSFT,GOOGL \
+  --k-expirations 6 --k-strikes 5 \
+  --bar-size "5 mins"
 ```
 
 ### Contract Selection Modes

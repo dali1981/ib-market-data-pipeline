@@ -221,7 +221,7 @@ class MarketCalendar:
         return f"MarketCalendar(exchange='{self.exchange}')"
 
 
-# Convenience function for quick access
+# Convenience functions for quick access
 @lru_cache(maxsize=10)
 def get_market_calendar(exchange: str = "NYSE") -> MarketCalendar:
     """
@@ -238,3 +238,44 @@ def get_market_calendar(exchange: str = "NYSE") -> MarketCalendar:
         >>> days = cal.get_trading_days(date(2025, 1, 1), date(2025, 12, 31))
     """
     return MarketCalendar(exchange)
+
+
+def get_previous_trading_day(ref_date: date, exchange: str = "NYSE") -> date:
+    """
+    Get the previous valid trading day before ref_date.
+
+    Skips weekends and market holidays using the specified exchange calendar.
+
+    Args:
+        ref_date: Reference date
+        exchange: Exchange code (default: "NYSE")
+
+    Returns:
+        Previous trading day (date object)
+
+    Raises:
+        ValueError: If no previous trading day found in reasonable window (30 days)
+
+    Example:
+        >>> # Monday Nov 4, 2025 → Friday Nov 1, 2025
+        >>> get_previous_trading_day(date(2025, 11, 4))
+        datetime.date(2025, 11, 1)
+
+        >>> # Wednesday Nov 13, 2025 → Tuesday Nov 12, 2025
+        >>> get_previous_trading_day(date(2025, 11, 13))
+        datetime.date(2025, 11, 12)
+
+        >>> # Day after Thanksgiving → Day before Thanksgiving
+        >>> get_previous_trading_day(date(2025, 11, 28))
+        datetime.date(2025, 11, 26)
+    """
+    cal = get_market_calendar(exchange)
+    prev_day = cal.get_previous_trading_day(ref_date, skip_count=1)
+
+    if prev_day is None:
+        raise ValueError(
+            f"No previous trading day found before {ref_date}. "
+            f"This may indicate a market closure or data issue."
+        )
+
+    return prev_day

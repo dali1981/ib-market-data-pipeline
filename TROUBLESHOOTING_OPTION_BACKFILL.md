@@ -33,7 +33,7 @@ The isolation tests confirmed:
 | 2105 | **HMDS data farm connection broken** | ❌ **No historical data** |
 | 2158 | Sec-def data farm connection OK | ✅ Normal |
 | 162  | Historical market data service error | ❌ No data available |
-| 2174 | Timezone warning (deprecated format) | ⚠️ Warning only |
+| 2174 | **Timezone format warning** (see below) | ⚠️ Warning only |
 
 ## Solution: Wait for IB Maintenance to Complete
 
@@ -144,6 +144,64 @@ print(bars.head())
 ```
 
 ## Common Issues
+
+### Issue: Error 2174 - Timezone Format Warning
+
+**Error message**: `IB error 2174: You submitted request with date-time attributes without explicit time zone`
+
+**Cause**: IB API now requires explicit timezone in datetime strings. The old "implied timezone" format is deprecated.
+
+**Who is affected:**
+- ✅ **Production CLI commands** (`dlt-ibapi backfill-options`, etc.): Already fixed (commit `f9cb92a`)
+- ❌ **Custom test scripts**: Need manual update to include timezone
+- ❌ **Direct ib-connector usage**: Must use timezone-aware format
+
+**Fix for custom code:**
+
+```python
+# WRONG - Old format without timezone
+bars = hist_svc.bars(
+    contract=contract,
+    endDateTime="20251114 23:59:59",  # ❌ Missing timezone → Error 2174
+    durationStr="12 D",
+    ...
+)
+
+# CORRECT - New format with explicit timezone
+bars = hist_svc.bars(
+    contract=contract,
+    endDateTime="20251114 23:59:59 US/Eastern",  # ✅ With timezone
+    durationStr="12 D",
+    ...
+)
+
+# BEST - Use dlt-ibapi utility (production code uses this)
+from dlt_ibapi.utils.ib_datetime import format_ib_end_datetime
+from datetime import date
+
+bars = hist_svc.bars(
+    contract=contract,
+    endDateTime=format_ib_end_datetime(date(2025, 11, 14)),  # ✅ Returns "20251114 23:59:59 US/Eastern"
+    durationStr="12 D",
+    ...
+)
+```
+
+**Important**: All production `dlt-ibapi` CLI commands already use the correct timezone-aware format. This error only appears when:
+1. Running custom test scripts with hardcoded datetime strings
+2. Calling `ib-connector` directly without the `format_ib_end_datetime()` utility
+3. Using outdated example code copied from old documentation
+
+**Related files:**
+- Production utility: `src/dlt_ibapi/utils/ib_datetime.py` (defines `format_ib_end_datetime()`)
+- Production usage: `src/dlt_ibapi/backfill/resources.py` (lines 449, 663)
+- Fix commit: `f9cb92a` - "Fix timezone formatting and implement k_expirations filtering"
+
+**Test scripts that need manual update:**
+- `test_option_bars_resolved.py` (fixed in this commit)
+- Any custom scripts you've written
+
+---
 
 ### Issue: Still Getting Timeouts After HMDS Restored
 

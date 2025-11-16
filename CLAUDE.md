@@ -85,8 +85,14 @@ dlt-ibapi load-earnings earnings.json
 # 2. Capture option chain snapshot
 dlt-ibapi snapshot AAPL --min-dte 7 --max-dte 60
 
-# 3. Backfill option bars
+# 3. Backfill option bars (single symbol)
 dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
+
+# 3b. Backfill option bars (earnings batch - all symbols)
+dlt-ibapi backfill-options --earnings-date 2025-11-13 --k-expirations 6 --k-strikes 5
+
+# 3c. Backfill option bars (earnings batch - filter specific symbols)
+dlt-ibapi backfill-options --earnings-date 2025-11-13 --symbols AAPL,MSFT --k-expirations 6
 
 # 4. Backfill equity bars
 dlt-ibapi backfill-equity AAPL --bar-size "1 day"
@@ -420,6 +426,13 @@ info = pipeline.run(snapshot_data, write_disposition="append", loader_file_forma
 **Primary Key Difference**:
 - `load_earnings_from_json`: `[symbol, earnings_date]` (current earnings)
 - `load_earnings_snapshot`: `[symbol, earnings_date, snapshot_date]` (historical tracking)
+
+**Earnings Time Field**: The `earnings_time` field is critical for accurate option pricing:
+- `PRE_MARKET`: Options priced at previous day's close (before market opens)
+- `AFTER_HOURS`: Options priced at same day's close (after market closes)
+- `UNKNOWN`: Defaults to same day's close (conservative)
+
+When using `--earnings-date` for option backfills, spot prices are automatically selected based on this field. Pre-market earnings on Monday use previous Friday's close (skips weekends/holidays via NYSE calendar).
 
 ### Querying Earnings Data
 

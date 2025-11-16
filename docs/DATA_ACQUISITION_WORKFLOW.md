@@ -433,6 +433,45 @@ dlt-ibapi resolve-contracts --sec-type OPT --snapshot-date 2025-11-13
 
 ---
 
+### Error 2174: Timezone format warning
+
+**Error message**: `IB error 2174: You submitted request with date-time attributes without explicit time zone`
+
+**Cause**: IB API requires explicit timezone in datetime strings (deprecated implicit timezone functionality).
+
+**Who is affected:**
+- ✅ **Production CLI commands**: Already fixed (commit f9cb92a) - uses `format_ib_end_datetime()` utility
+- ❌ **Custom test scripts**: Need manual update to include timezone
+- ❌ **Direct API usage**: Must use timezone-aware format
+
+**Fix for custom code:**
+
+```python
+# WRONG - Old format without timezone
+endDateTime="20251114 23:59:59"
+
+# CORRECT - New format with explicit timezone
+endDateTime="20251114 23:59:59 US/Eastern"
+
+# BEST - Use dlt-ibapi utility
+from dlt_ibapi.utils.ib_datetime import format_ib_end_datetime
+from datetime import date
+
+endDateTime = format_ib_end_datetime(date(2025, 11, 14))
+# Returns: "20251114 23:59:59 US/Eastern"
+```
+
+**Note**: All production `dlt-ibapi` CLI commands already use the correct timezone-aware format. This error only appears when:
+1. Using custom test scripts with hardcoded datetime strings
+2. Calling IB API directly without the `format_ib_end_datetime()` utility
+3. Using outdated example code
+
+**Related files:**
+- Production code (correct): `src/dlt_ibapi/utils/ib_datetime.py`
+- Production usage: `src/dlt_ibapi/backfill/resources.py` (lines 449, 663)
+
+---
+
 ## Performance Tips
 
 ### Optimize Request Volume

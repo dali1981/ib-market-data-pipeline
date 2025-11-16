@@ -478,6 +478,47 @@ dlt-ibapi list-snapshots AAPL
 dlt-ibapi stats ib_options.duckdb --dataset options
 ```
 
+### Earnings-Aware Spot Price Selection
+
+When using `--earnings-date` for batch backfills, spot prices are **automatically selected based on earnings announcement timing**:
+
+| Earnings Time | Spot Price Used | Rationale |
+|---------------|-----------------|-----------|
+| **PRE_MARKET** (before 9:30 AM) | **Previous trading day's close** | Options are priced before market opens |
+| **AFTER_HOURS** (after 4:00 PM) | **Same day's close** | Options are priced after market closes |
+| **UNKNOWN** | Same day's close (default) | Conservative assumption |
+
+**Why This Matters**: Options are priced differently based on when earnings are announced. For pre-market earnings, the market hasn't opened yet, so option chains reflect the previous day's closing price, not the current day's close.
+
+**Example Scenario**:
+
+```bash
+# Earnings on Wed Nov 13, 2025:
+# - AAPL reports at 7:00 AM (PRE_MARKET)   → Uses Tue Nov 12 close
+# - MSFT reports at 4:30 PM (AFTER_HOURS)  → Uses Wed Nov 13 close
+
+# All symbols with earnings on this date
+dlt-ibapi backfill-options --earnings-date 2025-11-13 \
+  --k-strikes 5 --bar-size "5 mins"
+
+# Filter specific symbols only
+dlt-ibapi backfill-options --earnings-date 2025-11-13 \
+  --symbols AAPL,MSFT,GOOGL \
+  --k-strikes 5 --bar-size "5 mins"
+
+# Automatically:
+# 1. Reads earnings_time from earnings calendar
+# 2. Filters to requested symbols (if --symbols provided)
+# 3. Selects appropriate spot price date per symbol
+# 4. Logs: "spot_price_selected: AAPL, earnings_time=PRE_MARKET, spot_price_date=2025-11-12"
+```
+
+**Weekend Handling**: Pre-market earnings on Monday automatically use previous Friday's close (skips weekend).
+
+**Holiday Handling**: Uses NYSE market calendar to skip holidays (e.g., pre-market after Thanksgiving uses Wednesday's close).
+
+**No Configuration Required**: The `earnings_time` field in the earnings calendar data automatically drives this behavior.
+
 ---
 
 ## Equity Bars Backfill

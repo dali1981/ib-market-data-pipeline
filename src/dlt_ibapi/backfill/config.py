@@ -138,6 +138,14 @@ class OptionBackfillConfig(BackfillConfig):
         description="Include put options"
     )
 
+    # Request timeout
+    request_timeout: Optional[float] = Field(
+        default=None,
+        description="Override timeout for historical data requests (seconds). If None, uses dynamic calculation based on bar_size and duration.",
+        ge=10.0,
+        le=300.0
+    )
+
     @field_validator("moneyness_levels")
     @classmethod
     def validate_moneyness(cls, v, info):

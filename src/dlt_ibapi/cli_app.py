@@ -571,6 +571,9 @@ def backfill_options(
     earnings_date: Optional[str] = typer.Option(
         None, "--earnings-date", help="Earnings date to backfill all symbols (YYYY-MM-DD, mutually exclusive with symbol)"
     ),
+    symbols: Optional[str] = typer.Option(
+        None, "--symbols", help="Filter specific symbols when using --earnings-date (comma-separated: AAPL,MSFT)"
+    ),
     k_expirations: Optional[int] = typer.Option(
         None, "--k-expirations", help="Limit to k closest expirations (soonest to expire)"
     ),
@@ -614,6 +617,7 @@ def backfill_options(
     Examples:
         dlt-ibapi backfill-options AAPL 150.0 --mode atm --k-strikes 3
         dlt-ibapi backfill-options --earnings-date 2025-11-13 --start 2025-01-01 --end 2025-11-13 --k-expirations 6
+        dlt-ibapi backfill-options --earnings-date 2025-11-13 --symbols AAPL,MSFT,GOOGL --k-expirations 6
         dlt-ibapi backfill-options AAPL 150.0 --pipeline-name my_options --verbose
     """
     from .cli import BackfillOptionsParams, execute_backfill_options
@@ -636,6 +640,19 @@ def backfill_options(
     if earnings_date and spot_price is not None:
         console.print("[red]Error: spot_price should not be specified with --earnings-date (auto-extracted).[/red]")
         raise typer.Exit(1)
+
+    # Validate --symbols only with --earnings-date
+    if symbols and not earnings_date:
+        console.print("[red]Error: --symbols can only be used with --earnings-date.[/red]")
+        raise typer.Exit(1)
+
+    # Parse symbols list
+    symbols_list = None
+    if symbols:
+        symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        if not symbols_list:
+            console.print("[red]Error: --symbols list is empty.[/red]")
+            raise typer.Exit(1)
 
     # Handle legacy --database argument
     if database:
@@ -706,6 +723,7 @@ def backfill_options(
             underlying=symbol,
             spot_price=spot_price,
             earnings_date=earnings_date_parsed,
+            earnings_symbols_filter=symbols_list,  # New: filter specific symbols in earnings mode
             auto_spot_price=earnings_date_parsed is not None,
             k_expirations=k_expirations,
             snapshot_date=snapshot_date_parsed,

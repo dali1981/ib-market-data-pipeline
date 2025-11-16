@@ -23,6 +23,41 @@ from dlt_ibapi.utils.ib_datetime import format_ib_end_datetime
 from ib_connector import make_stock
 
 
+def _calculate_timeout(bar_size: str, days_span: int, base_timeout: float = 30.0) -> float:
+    """
+    Calculate appropriate timeout based on bar size and duration.
+
+    Intraday bars need more time per day due to higher data volume.
+    Options data may require extra buffer due to liquidity and HMDS latency.
+
+    Args:
+        bar_size: IB bar size string (e.g., "5 mins", "1 hour", "1 day")
+        days_span: Number of days in the request
+        base_timeout: Base timeout in seconds (default: 30.0)
+
+    Returns:
+        Calculated timeout in seconds, capped at 300.0 (5 minutes)
+
+    Examples:
+        - Daily bars, 30 days: 30s (base timeout)
+        - 5-min bars, 8 days: 30 + (8 × 10) = 110s
+        - 1-min bars, 30 days: 30 + (30 × 10) = 300s (capped)
+    """
+    # Check if intraday bar size
+    is_intraday = any(x in bar_size.lower() for x in ["min", "sec", "hour"])
+
+    if is_intraday:
+        # For intraday: add ~10 seconds per day to account for data volume
+        # More bars = more processing time on IB's side
+        timeout = base_timeout + (days_span * 10.0)
+    else:
+        # For daily/weekly/monthly: base timeout is sufficient
+        timeout = base_timeout
+
+    # Cap at 5 minutes to avoid indefinite hangs
+    return min(timeout, 300.0)
+
+
 def _get_runtime(config: Optional[IBConnectionConfig] = None) -> IBRuntime:
     """Create and start IBRuntime."""
     cfg = config if config is not None else get_connection_config()
@@ -442,7 +477,15 @@ def backfill_option_bars(
                     years = max(1, days_span // 365)
                     duration_str = f"{years} Y"
 
-                # Fetch historical bars
+                # Fetch historical bars with dynamic timeout
+                # Use config override if provided, otherwise calculate based on bar size and duration
+                if backfill_config.request_timeout is not None:
+                    timeout = backfill_config.request_timeout
+                    log.debug("using_config_timeout", timeout=timeout, bar_size=backfill_config.bar_size)
+                else:
+                    timeout = _calculate_timeout(backfill_config.bar_size, days_span)
+                    log.debug("calculated_timeout", timeout=timeout, bar_size=backfill_config.bar_size, days_span=days_span)
+
                 try:
                     bars = hist_svc.bars(
                         contract=contract,
@@ -451,7 +494,7 @@ def backfill_option_bars(
                         barSizeSetting=backfill_config.bar_size,
                         whatToShow=backfill_config.what_to_show,
                         useRTH=1 if backfill_config.use_rth else 0,
-                        timeout=30.0,
+                        timeout=timeout,
                     )
 
                     bar_count = 0
@@ -656,7 +699,10 @@ def backfill_equity_bars(
                 years = max(1, days_span // 365)
                 duration_str = f"{years} Y"
 
-            # Fetch historical bars
+            # Fetch historical bars with dynamic timeout
+            timeout = _calculate_timeout(bar_size, days_span)
+            log.debug("calculated_timeout", timeout=timeout, bar_size=bar_size, days_span=days_span)
+
             try:
                 bars = hist_svc.bars(
                     contract=contract,
@@ -665,7 +711,7 @@ def backfill_equity_bars(
                     barSizeSetting=bar_size,
                     whatToShow=what_to_show,
                     useRTH=1 if use_rth else 0,
-                    timeout=30.0,
+                    timeout=timeout,
                 )
 
                 bar_count = 0

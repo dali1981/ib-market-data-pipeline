@@ -121,6 +121,7 @@ class BackfillOptionsParams(BaseModel):
 
     # Mode 2: Earnings batch
     earnings_date: Optional[date] = Field(default=None, description="Earnings date to backfill all symbols (for batch mode)")
+    earnings_symbols_filter: Optional[List[str]] = Field(default=None, description="Filter specific symbols in earnings mode (None = all symbols on earnings_date)")
     auto_spot_price: bool = Field(True, description="Auto-extract spot prices from equity bars (used with earnings_date)")
     k_expirations: Optional[int] = Field(default=None, ge=1, le=12, description="Limit to k closest expirations beyond earnings date (None = all)")
     snapshot_date: Optional[date] = Field(default=None, description="Snapshot date to read expirations from (defaults to earnings_date)")
@@ -175,6 +176,15 @@ class BackfillOptionsParams(BaseModel):
     def validate_underlying(cls, v: Optional[str]) -> Optional[str]:
         """Ensure underlying is uppercase if provided."""
         return v.upper().strip() if v else None
+
+    @field_validator('earnings_symbols_filter')
+    @classmethod
+    def validate_earnings_symbols_filter(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Ensure symbols in filter are uppercase and non-empty."""
+        if v is None:
+            return None
+        # Uppercase all symbols and filter out empty strings
+        return [s.upper().strip() for s in v if s and s.strip()]
 
     def model_post_init(self, __context):
         """Validate mode-specific requirements."""
