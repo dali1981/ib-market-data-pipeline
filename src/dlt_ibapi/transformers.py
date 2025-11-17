@@ -221,7 +221,7 @@ def normalize_historical_tick_data(
     This is different from normalize_tick_data which handles real-time streaming ticks.
 
     Args:
-        tick: HistoricalTick object from ib-connector
+        tick: HistoricalTick object from IB API (HistoricalTickBidAsk, HistoricalTickLast, etc.)
         underlying: Underlying symbol
         expiry: Expiration date
         strike: Strike price
@@ -230,28 +230,43 @@ def normalize_historical_tick_data(
 
     Returns:
         Dictionary matching tick schema for DLT
+
+    Note:
+        tick.time is a Unix timestamp (int), not a datetime object.
+        IB API uses attribute names like priceBid, priceAsk (not bid_price, ask_price).
     """
+    # Convert Unix timestamp to datetime
+    # Note: tick.time is UTC Unix timestamp (seconds since epoch)
+    from datetime import datetime as dt, timezone
+    tick_dt = dt.fromtimestamp(tick.time, tz=timezone.utc)
+
     base = {
-        "tick_time": tick.time.isoformat() if hasattr(tick.time, 'isoformat') else str(tick.time),
+        "tick_time": tick_dt.isoformat(),
         "underlying": underlying,
         "expiry": expiry.isoformat(),
         "strike": strike,
         "right": right.upper(),
-        "date": tick.time.date().isoformat() if hasattr(tick.time, 'date') else tick.time[:10],
+        "date": tick_dt.date().isoformat(),
         "symbol": underlying,
     }
 
     if tick_type == 'BID_ASK':
-        midpoint = (tick.bid_price + tick.ask_price) / 2 if tick.bid_price and tick.ask_price else None
-        spread = tick.ask_price - tick.bid_price if tick.bid_price and tick.ask_price else None
+        # IB API uses priceBid, priceAsk, sizeBid, sizeAsk (not bid_price, etc.)
+        bid_price = tick.priceBid
+        ask_price = tick.priceAsk
+        bid_size = tick.sizeBid
+        ask_size = tick.sizeAsk
+
+        midpoint = (bid_price + ask_price) / 2 if bid_price and ask_price else None
+        spread = ask_price - bid_price if bid_price and ask_price else None
         spread_pct = (spread / midpoint * 100) if spread and midpoint else None
 
         return {
             **base,
-            "bid_price": tick.bid_price,
-            "ask_price": tick.ask_price,
-            "bid_size": tick.bid_size,
-            "ask_size": tick.ask_size,
+            "bid_price": bid_price,
+            "ask_price": ask_price,
+            "bid_size": bid_size,
+            "ask_size": ask_size,
             "spread": spread,
             "spread_pct": spread_pct,
             "midpoint": midpoint,
@@ -261,8 +276,8 @@ def normalize_historical_tick_data(
             **base,
             "price": tick.price,
             "size": tick.size,
-            "exchange": tick.exchange or "",
-            "special_conditions": tick.special_conditions or "",
+            "exchange": getattr(tick, 'exchange', ""),
+            "special_conditions": getattr(tick, 'specialConditions', ""),
         }
     elif tick_type == 'MIDPOINT':
         return {
