@@ -34,14 +34,24 @@ Tick Data Schema (trades):
 import dlt
 from datetime import datetime, date, timedelta
 from typing import Iterator, Literal, Optional
+import pytz
 from ib_connector import IBRuntime, HistoricalTick
 from ib_connector.contracts import make_option
+from ib_connector.services import ContractDetailsService, TickHistoricalService
 import logging
 
 from ..config import IBConnectionConfig
 from ..transformers import normalize_historical_tick_data
 
 logger = logging.getLogger(__name__)
+
+
+def _format_ib_datetime(dt: datetime, timezone_str: str) -> str:
+    """Format datetime for IB API with timezone."""
+    if dt.tzinfo is None:
+        tz = pytz.timezone(timezone_str)
+        dt = tz.localize(dt)
+    return dt.strftime("%Y%m%d %H:%M:%S") + f" {timezone_str}"
 
 
 @dlt.resource(
@@ -124,33 +134,84 @@ def backfill_option_ticks_bid_ask(
             curr=currency
         )
 
-        # Fetch ticks
-        ticks = runtime.tick_historical.fetch_historical_ticks_range(
-            contract=contract,
-            start_date=start_datetime,
-            end_date=end_datetime,
-            tick_type='BID_ASK',
-            use_rth=use_rth,
-            timezone=timezone
-        )
+        # Resolve contract to get ConId
+        contract_svc = ContractDetailsService(runtime)
+        details_list = contract_svc.fetch(contract)
+        if not details_list:
+            logger.error(f"No contract details found for {underlying} ${strike}{right}")
+            return
 
-        logger.info(f"Fetched {len(ticks)} ticks for {underlying} ${strike}{right}")
-        if ticks:
-            first = ticks[0]
-            last = ticks[-1]
-            logger.info(f"First tick: {first.time}, bid={first.bid_price}, ask={first.ask_price}")
-            logger.info(f"Last tick: {last.time}, bid={last.bid_price}, ask={last.ask_price}")
+        contract = details_list[0].contract
+        logger.info(f"Contract resolved: ConId={contract.conId}")
 
-        # Transform and yield
-        for tick in ticks:
-            yield normalize_historical_tick_data(
-                tick=tick,
-                underlying=underlying,
-                expiry=expiry,
-                strike=strike,
-                right=right,
-                tick_type='BID_ASK'
+        # Create tick service
+        tick_svc = TickHistoricalService(runtime)
+
+        # Make timezone-aware
+        tz = pytz.timezone(timezone)
+        if start_datetime.tzinfo is None:
+            start_datetime = tz.localize(start_datetime)
+        if end_datetime.tzinfo is None:
+            end_datetime = tz.localize(end_datetime)
+
+        # Pagination loop - yield ticks as they arrive
+        current_start = start_datetime
+        total_ticks = 0
+        request_count = 0
+
+        while current_start < end_datetime:
+            request_count += 1
+            start_str = _format_ib_datetime(current_start, timezone)
+
+            logger.info(f"Request #{request_count}: start={current_start}")
+
+            # Make request (IB API requires ONLY startDateTime, not both)
+            result = tick_svc.ticks(
+                contract=contract,
+                startDateTime=start_str,
+                endDateTime="",  # Empty = not used
+                numberOfTicks=1000,
+                whatToShow='BID_ASK',
+                useRth=1 if use_rth else 0,
+                ignoreSize=False,
+                timeout=30.0
             )
+
+            # Extract ticks and done flag
+            ticks = result.get('items', result) if isinstance(result, dict) else result
+            done = result.get('done', True) if isinstance(result, dict) else True
+
+            logger.info(f"  Received {len(ticks)} ticks")
+
+            # Yield ticks immediately (streaming, no accumulation)
+            for tick in ticks:
+                yield normalize_historical_tick_data(
+                    tick=tick,
+                    underlying=underlying,
+                    expiry=expiry,
+                    strike=strike,
+                    right=right,
+                    tick_type='BID_ASK'
+                )
+                total_ticks += 1
+
+            # Update start time for next request
+            if ticks:
+                last_tick = ticks[-1]
+                last_tick_dt = datetime.fromtimestamp(last_tick.time, tz=tz)
+
+                # Check if we've reached the end time
+                if last_tick_dt >= end_datetime:
+                    logger.info(f"Reached end time: {last_tick_dt}")
+                    break
+
+                current_start = last_tick_dt
+            else:
+                # No ticks received
+                logger.info("No more ticks available")
+                break
+
+        logger.info(f"Total: {total_ticks} ticks from {request_count} requests")
 
 
 @dlt.resource(
@@ -212,27 +273,81 @@ def backfill_option_ticks_trades(
             curr=currency
         )
 
-        # Fetch ticks
-        ticks = runtime.tick_historical.fetch_historical_ticks_range(
-            contract=contract,
-            start_date=start_datetime,
-            end_date=end_datetime,
-            tick_type='TRADES',
-            use_rth=use_rth,
-            timezone=timezone
-        )
+        # Resolve contract to get ConId
+        contract_svc = ContractDetailsService(runtime)
+        details_list = contract_svc.fetch(contract)
+        if not details_list:
+            logger.error(f"No contract details found for {underlying} ${strike}{right}")
+            return
 
-        logger.info(f"Fetched {len(ticks)} trade ticks for {underlying} ${strike}{right}")
-        if ticks:
-            first = ticks[0]
-            logger.info(f"First tick: {first.time}, price={first.price}, size={first.size}")
+        contract = details_list[0].contract
+        logger.info(f"Contract resolved: ConId={contract.conId}")
 
-        for tick in ticks:
-            yield normalize_historical_tick_data(
-                tick=tick,
-                underlying=underlying,
-                expiry=expiry,
-                strike=strike,
-                right=right,
-                tick_type='TRADES'
+        # Create tick service
+        tick_svc = TickHistoricalService(runtime)
+
+        # Make timezone-aware
+        tz = pytz.timezone(timezone)
+        if start_datetime.tzinfo is None:
+            start_datetime = tz.localize(start_datetime)
+        if end_datetime.tzinfo is None:
+            end_datetime = tz.localize(end_datetime)
+
+        # Pagination loop - yield ticks as they arrive
+        current_start = start_datetime
+        total_ticks = 0
+        request_count = 0
+
+        while current_start < end_datetime:
+            request_count += 1
+            start_str = _format_ib_datetime(current_start, timezone)
+
+            logger.info(f"Request #{request_count}: start={current_start}")
+
+            # Make request (IB API requires ONLY startDateTime, not both)
+            result = tick_svc.ticks(
+                contract=contract,
+                startDateTime=start_str,
+                endDateTime="",  # Empty = not used
+                numberOfTicks=1000,
+                whatToShow='TRADES',
+                useRth=1 if use_rth else 0,
+                ignoreSize=False,
+                timeout=30.0
             )
+
+            # Extract ticks and done flag
+            ticks = result.get('items', result) if isinstance(result, dict) else result
+            done = result.get('done', True) if isinstance(result, dict) else True
+
+            logger.info(f"  Received {len(ticks)} ticks")
+
+            # Yield ticks immediately (streaming, no accumulation)
+            for tick in ticks:
+                yield normalize_historical_tick_data(
+                    tick=tick,
+                    underlying=underlying,
+                    expiry=expiry,
+                    strike=strike,
+                    right=right,
+                    tick_type='TRADES'
+                )
+                total_ticks += 1
+
+            # Update start time for next request
+            if ticks:
+                last_tick = ticks[-1]
+                last_tick_dt = datetime.fromtimestamp(last_tick.time, tz=tz)
+
+                # Check if we've reached the end time
+                if last_tick_dt >= end_datetime:
+                    logger.info(f"Reached end time: {last_tick_dt}")
+                    break
+
+                current_start = last_tick_dt
+            else:
+                # No ticks received
+                logger.info("No more ticks available")
+                break
+
+        logger.info(f"Total: {total_ticks} ticks from {request_count} requests")
