@@ -60,9 +60,13 @@ class DatasetStatsReader:
 
         for path in self.data_root.iterdir():
             if path.is_dir():
-                # Check if directory contains Parquet files
+                # Check if directory contains Parquet files (exclude _delta_log)
                 parquet_pattern = str(path / "**/*.parquet")
-                if glob.glob(parquet_pattern, recursive=True):
+                parquet_files = [
+                    f for f in glob.glob(parquet_pattern, recursive=True)
+                    if "_delta_log" not in f
+                ]
+                if parquet_files:
                     tables.append(path.name)
 
         return sorted(tables)
@@ -90,9 +94,12 @@ class DatasetStatsReader:
         if not table_path.exists():
             raise ValueError(f"Table directory does not exist: {table_path}")
 
-        # Check if any Parquet files exist
+        # Check if any Parquet files exist (exclude _delta_log)
         parquet_pattern = str(table_path / "**/*.parquet")
-        parquet_files = glob.glob(parquet_pattern, recursive=True)
+        parquet_files = [
+            f for f in glob.glob(parquet_pattern, recursive=True)
+            if "_delta_log" not in f
+        ]
 
         if not parquet_files:
             return {
@@ -106,16 +113,20 @@ class DatasetStatsReader:
         conn = duckdb.connect(":memory:")
 
         try:
+            # Build file list query parameter (exclude _delta_log files)
+            # Use explicit file list instead of glob pattern for better control
+            file_list = ", ".join(f"'{f}'" for f in parquet_files)
+
             # Query row count
             count_query = f"""
                 SELECT COUNT(*) as count
-                FROM parquet_scan('{table_path}/**/*.parquet', hive_partitioning=true)
+                FROM read_parquet([{file_list}], hive_partitioning=true)
             """
             row_count = int(conn.execute(count_query).fetchone()[0])
 
             # Get column names
             columns_query = f"""
-                DESCRIBE SELECT * FROM parquet_scan('{table_path}/**/*.parquet', hive_partitioning=true) LIMIT 0
+                DESCRIBE SELECT * FROM read_parquet([{file_list}], hive_partitioning=true) LIMIT 0
             """
             columns_result = conn.execute(columns_query).fetchall()
             columns = [row[0] for row in columns_result]
@@ -136,7 +147,7 @@ class DatasetStatsReader:
                         SELECT
                             MIN({date_col})::VARCHAR as min_date,
                             MAX({date_col})::VARCHAR as max_date
-                        FROM parquet_scan('{table_path}/**/*.parquet', hive_partitioning=true)
+                        FROM read_parquet([{file_list}], hive_partitioning=true)
                     """
                     date_result = conn.execute(date_query).fetchone()
                     if date_result and date_result[0] and date_result[1]:
@@ -157,7 +168,7 @@ class DatasetStatsReader:
                 try:
                     symbols_query = f"""
                         SELECT DISTINCT {symbol_col}
-                        FROM parquet_scan('{table_path}/**/*.parquet', hive_partitioning=true)
+                        FROM read_parquet([{file_list}], hive_partitioning=true)
                         ORDER BY {symbol_col}
                         LIMIT 100
                     """

@@ -212,6 +212,7 @@ class EquityBarsReader(ParquetReaderBase):
     def get_symbols_summary(
         self,
         bar_size: Optional[str] = None,
+        symbols: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """
         Get summary statistics for all symbols.
@@ -219,18 +220,29 @@ class EquityBarsReader(ParquetReaderBase):
 
         Args:
             bar_size: Filter by bar size (optional)
+            symbols: Filter by specific symbols (optional)
 
         Returns:
             DataFrame with symbol, bar_size, first_bar, last_bar, bar_count
         """
         table_name = self._get_table_name()
 
-        where_clause = ""
+        where_clauses = []
         params = {}
 
         if bar_size:
-            where_clause = "WHERE bar_size = $bar_size"
+            where_clauses.append("bar_size = $bar_size")
             params["bar_size"] = bar_size
+
+        if symbols:
+            # Convert to uppercase for case-insensitive matching
+            symbols_upper = [s.upper() for s in symbols]
+            placeholders = ", ".join([f"$symbol_{i}" for i in range(len(symbols_upper))])
+            where_clauses.append(f"symbol IN ({placeholders})")
+            for i, sym in enumerate(symbols_upper):
+                params[f"symbol_{i}"] = sym
+
+        where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
         query = f"""
             SELECT

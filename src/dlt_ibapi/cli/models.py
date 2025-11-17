@@ -13,7 +13,7 @@ Pattern: Use frozen=True for immutability, Field for validation.
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Literal
+from typing import Optional, List, Dict, Literal, Any
 
 
 def _get_default_database_path() -> Path:
@@ -494,4 +494,85 @@ class BackfillTicksResult(BaseModel):
     ticks_loaded: int = Field(..., ge=0, description="Number of ticks loaded")
     time_range: str = Field(..., description="Time range of ticks")
     duration_seconds: float = Field(..., ge=0, description="Duration of backfill")
+    error: Optional[str] = Field(default=None, description="Error message if failed")
+
+# Strategy Selection Models
+
+class IVRankParams(BaseModel):
+    """Parameters for IV ranking operation."""
+    model_config = ConfigDict(frozen=True)
+
+    earnings_date: date = Field(..., description="Earnings date to analyze")
+    symbols: Optional[List[str]] = Field(default=None, description="Filter specific symbols (optional)")
+    earnings_time: Optional[Literal['PRE_MARKET', 'AFTER_HOURS', 'UNKNOWN']] = Field(
+        default=None,
+        description="Filter by earnings time (optional)"
+    )
+    option_type: Literal['C', 'P'] = Field('C', description="Option type (C for calls, P for puts)")
+    bar_size: str = Field('5 mins', description="Bar size for IV calculation precision")
+    entry_hour: int = Field(15, ge=0, le=23, description="Entry hour (e.g., 15 for 3pm)")
+    entry_minute: int = Field(0, ge=0, le=59, description="Entry minute")
+    top_n: Optional[int] = Field(default=None, ge=1, description="Limit to top N results")
+    output_file: Optional[Path] = Field(default=None, description="Save results to CSV file")
+    database_path: Path = Field(default_factory=_get_default_database_path, description="Path to database")
+    earnings_dataset: str = Field('earnings', description="Earnings dataset name")
+    options_dataset: str = Field('options', description="Options dataset name")
+    stocks_dataset: str = Field('stocks', description="Stocks dataset name")
+    option_chains_dataset: str = Field('option_chains', description="Option chains dataset name")
+
+
+class IVRankCandidate(BaseModel):
+    """Single IV ranking candidate."""
+    symbol: str = Field(..., description="Stock symbol")
+    earnings_date: date = Field(..., description="Earnings date")
+    earnings_time: str = Field(..., description="Earnings time (PRE_MARKET/AFTER_HOURS/UNKNOWN)")
+    spot_price: float = Field(..., description="Underlying spot price at entry")
+    strike: float = Field(..., description="ATM strike price")
+    iv_short_entry: float = Field(..., description="Implied volatility of short leg at entry")
+    iv_long_entry: float = Field(..., description="Implied volatility of long leg at entry")
+    iv_ratio_entry: float = Field(..., description="IV ratio (short IV / long IV) at entry")
+    short_expiry: date = Field(..., description="Short leg expiration date")
+    long_expiry: date = Field(..., description="Long leg expiration date")
+    entry_cost_per_contract: float = Field(..., description="Entry cost per contract")
+    rank: int = Field(..., ge=1, description="Rank (1 = highest IV ratio)")
+    iv_ratio_quartile: str = Field(..., description="Quartile (Q1-Q4, Q4 = highest)")
+
+
+class IVRankResult(BaseModel):
+    """Result of IV ranking operation."""
+    success: bool = Field(..., description="Whether ranking succeeded")
+    earnings_date: date = Field(..., description="Earnings date analyzed")
+    total_symbols: int = Field(..., ge=0, description="Total symbols with earnings")
+    tradable_symbols: int = Field(..., ge=0, description="Symbols with sufficient option data")
+    ranked_candidates: List[IVRankCandidate] = Field(default_factory=list, description="Ranked candidates")
+    duration_seconds: float = Field(..., ge=0, description="Duration of operation")
+    error: Optional[str] = Field(default=None, description="Error message if failed")
+
+
+class StrategySelectParams(IVRankParams):
+    """Parameters for strategy selection operation (extends IVRankParams)."""
+
+    min_iv_ratio: Optional[float] = Field(default=None, gt=0, description="Minimum IV ratio threshold")
+    max_entry_cost: Optional[float] = Field(default=None, gt=0, description="Maximum entry cost per contract")
+    min_quartile: Optional[Literal['Q1', 'Q2', 'Q3', 'Q4']] = Field(
+        default=None,
+        description="Minimum quartile to include"
+    )
+    profitable_only: bool = Field(False, description="Only include profitable trades (from backtest)")
+    top_n: Optional[int] = Field(None, ge=1, description="Limit to top N results (optional)")
+
+
+class StrategySelectResult(BaseModel):
+    """Result of strategy selection operation."""
+    success: bool = Field(..., description="Whether selection succeeded")
+    earnings_date: date = Field(..., description="Earnings date analyzed")
+    total_evaluated: int = Field(..., ge=0, description="Total candidates evaluated")
+    selected_count: int = Field(..., ge=0, description="Number of candidates selected")
+    selection_criteria: Dict[str, Any] = Field(default_factory=dict, description="Applied selection filters")
+    selected_candidates: List[IVRankCandidate] = Field(default_factory=list, description="Selected candidates")
+    statistics: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Summary statistics (mean_iv_ratio, expected_pnl, win_rate, etc.)"
+    )
+    duration_seconds: float = Field(..., ge=0, description="Duration of operation")
     error: Optional[str] = Field(default=None, description="Error message if failed")

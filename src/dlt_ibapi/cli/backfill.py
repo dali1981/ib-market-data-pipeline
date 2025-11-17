@@ -730,6 +730,7 @@ def _execute_backfill_options_earnings(
                     bar_size=params.bar_size,
                     selection_mode=selection_mode_enum,
                     k_strikes=params.k_strikes,
+                    k_expirations=params.k_expirations,  # Filter to k closest expirations
                     min_dte=0,      # Use all expirations from snapshot
                     max_dte=365,
                 )
@@ -758,8 +759,35 @@ def _execute_backfill_options_earnings(
                 warnings.append(f"Error processing {symbol}: {str(e)}")
                 logger.error(f"Error processing {symbol}: {e}", exc_info=True)
 
-        # Calculate metrics
+        # Calculate metrics by reading back from storage
         duration = time.time() - start_time
+
+        # Count total bars written
+        if contracts_processed > 0:
+            try:
+                from dlt_ibapi.repositories import OptionBarsReader
+
+                # Use storage config path
+                storage_cfg = get_storage_config()
+                database_path = Path(storage_cfg.get("storage", {}).get("base_path", "data"))
+
+                bars_reader = OptionBarsReader(
+                    database_path=str(database_path),
+                    dataset_name=params.dataset_name,
+                )
+
+                # Get summary for backfilled symbols
+                summary = bars_reader.get_symbols_summary(
+                    bar_size=params.bar_size,
+                    symbols=symbols,
+                )
+
+                if not summary.empty:
+                    total_bars = int(summary["bar_count"].sum())
+                    logger.info("counted_bars_from_storage", total_bars=total_bars)
+            except Exception as e:
+                logger.warning(f"Could not count bars from storage: {e}")
+                total_bars = 0
 
         logger.info(
             "options_backfill_earnings_complete",

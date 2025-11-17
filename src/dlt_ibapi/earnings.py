@@ -35,6 +35,7 @@ from dlt_ibapi.backtest.earnings_loader import EarningsCalendarLoader, EarningsE
     columns={
         "symbol": {"data_type": "text"},
         "earnings_date": {"data_type": "date"},
+        "date": {"data_type": "date", "partition": True},  # Partition column (same as earnings_date)
         "earnings_time": {"data_type": "text"},
         "company_name": {"data_type": "text"},
         "eps_forecast": {"data_type": "double"},
@@ -99,6 +100,7 @@ def load_earnings_from_json(
         yield {
             "symbol": event.symbol,
             "earnings_date": event.earnings_date,
+            "date": event.earnings_date,  # Add date field for partitioning
             "earnings_time": event.earnings_time,
             "company_name": event.company_name,
             "eps_forecast": event.eps_forecast,
@@ -115,6 +117,7 @@ def load_earnings_from_json(
         "snapshot_date": {"data_type": "date"},  # When the snapshot was taken
         "symbol": {"data_type": "text"},
         "earnings_date": {"data_type": "date"},
+        "date": {"data_type": "date", "partition": True},  # Partition column (same as earnings_date)
         "earnings_time": {"data_type": "text"},
         "company_name": {"data_type": "text"},
         "eps_forecast": {"data_type": "double"},
@@ -177,6 +180,7 @@ def load_earnings_snapshot(
             "snapshot_date": snapshot_date,  # Track when snapshot was taken
             "symbol": event.symbol,
             "earnings_date": event.earnings_date,
+            "date": event.earnings_date,  # Add date field for partitioning
             "earnings_time": event.earnings_time,
             "company_name": event.company_name,
             "eps_forecast": event.eps_forecast,

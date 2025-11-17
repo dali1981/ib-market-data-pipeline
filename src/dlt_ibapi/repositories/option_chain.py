@@ -276,3 +276,64 @@ class OptionChainSnapshotReader(ParquetReaderBase):
         }
         df = self._query_with_duckdb(query, params)
         return df["exchange"].tolist() if not df.empty else []
+
+    def get_symbols_with_snapshots(
+        self,
+        snapshot_date: Optional[date] = None,
+        symbols: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
+        """
+        Get all symbols that have option chain snapshots, with summary stats.
+
+        Args:
+            snapshot_date: Optional filter for specific snapshot date
+            symbols: Optional filter for specific symbols
+
+        Returns:
+            DataFrame with columns:
+            - symbol: Symbol name
+            - snapshot_date: Date of snapshot
+            - expiration_count: Number of expirations
+            - strike_count: Number of strikes
+            - earliest_expiry: Earliest expiration date
+            - latest_expiry: Latest expiration date
+
+        Example:
+            >>> reader = OptionChainSnapshotReader('./data', 'option_chains')
+            >>> # Get all symbols with snapshots on a specific date
+            >>> df = reader.get_symbols_with_snapshots(snapshot_date=date(2025, 11, 17))
+            >>> # Get all snapshots for specific symbols
+            >>> df = reader.get_symbols_with_snapshots(symbols=['AAPL', 'MSFT'])
+        """
+        table_name = self._get_table_name()
+        where_clauses = []
+        params = {}
+
+        if snapshot_date:
+            where_clauses.append("date = $snapshot_date")
+            params["snapshot_date"] = snapshot_date
+
+        if symbols:
+            # Convert to uppercase for case-insensitive matching
+            symbols_upper = [s.upper() for s in symbols]
+            placeholders = ", ".join([f"$symbol_{i}" for i in range(len(symbols_upper))])
+            where_clauses.append(f"underlying IN ({placeholders})")
+            for i, sym in enumerate(symbols_upper):
+                params[f"symbol_{i}"] = sym
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        query = f"""
+            SELECT DISTINCT
+                underlying as symbol,
+                date as snapshot_date,
+                MAX(expiration_count) as expiration_count,
+                MAX(strike_count) as strike_count
+            FROM {table_name}
+            {where_sql}
+            GROUP BY underlying, date
+            ORDER BY underlying, date DESC
+        """
+
+        df = self._query_with_duckdb(query, params)
+        return df

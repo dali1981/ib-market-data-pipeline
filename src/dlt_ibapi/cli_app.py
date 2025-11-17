@@ -28,8 +28,9 @@ from .sources import ib_historical_bars, ib_contract_details
 from datetime import date, datetime, timedelta
 import dlt
 
-# Import structlog configuration
+# Import structlog configuration and logging utilities
 from .utils.structlog_config import configure_structlog
+from .utils.logging import get_logger
 
 app = typer.Typer(
     name="dlt-ibapi",
@@ -37,6 +38,18 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+# Create snapshot subcommand group
+snapshot_app = typer.Typer(help="Option chain snapshot commands")
+app.add_typer(snapshot_app, name="snapshot")
+
+# Create equity subcommand group
+equity_app = typer.Typer(help="Equity bars commands")
+app.add_typer(equity_app, name="equity")
+
+# Create strategy subcommand group
+strategy_app = typer.Typer(help="Strategy selection and analysis commands")
+app.add_typer(strategy_app, name="strategy")
 
 
 @app.callback()
@@ -331,8 +344,8 @@ def fetch(
         raise typer.Exit(1)
 
 
-@app.command()
-def snapshot(
+@snapshot_app.command(name="capture")
+def snapshot_capture(
     symbol: Optional[str] = typer.Argument(None, help="Underlying symbol (e.g., AAPL) - use this OR --earnings-date"),
     snapshot_date: Optional[str] = typer.Option(
         None, "--date", "-d", help="Snapshot date (YYYY-MM-DD, default: today)"
@@ -439,7 +452,9 @@ def snapshot(
                     console.print(f"[yellow]Warning:[/yellow] {warning}")
 
             # Query and display results
-            reader = OptionChainSnapshotReader("data", dataset)
+            from .cli.models import _get_default_database_path
+            data_path = _get_default_database_path()
+            reader = OptionChainSnapshotReader(str(data_path), dataset)
             chain = reader.get_chain_for_date(symbol, snap_date, min_dte, max_dte)
 
             if not chain.empty:
@@ -562,6 +577,230 @@ def snapshot(
         except Exception as e:
             console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
             raise typer.Exit(1)
+
+
+@snapshot_app.command(name="list")
+def snapshot_list(
+    snapshot_date: Optional[str] = typer.Option(None, "--date", help="Filter by snapshot date (YYYY-MM-DD)"),
+    earnings_date: Optional[str] = typer.Option(None, "--earnings-date", help="Filter symbols with earnings on this date"),
+    symbols: Optional[List[str]] = typer.Option(None, "--symbols", "-s", help="Filter by symbols (comma-separated or repeat flag)"),
+    dataset: str = typer.Option("option_chains", "--dataset", help="Dataset name"),
+):
+    """
+    List symbols with option chain snapshots.
+
+    Example:
+        dlt-ibapi snapshot list --date 2025-11-17
+        dlt-ibapi snapshot list --earnings-date 2025-11-17
+        dlt-ibapi snapshot list --symbols "AAPL,MSFT"
+        dlt-ibapi snapshot list --symbols AAPL --symbols MSFT
+    """
+    from .repositories import OptionChainSnapshotReader, EarningsCalendarReader
+    from .cli.models import _get_default_database_path
+    from rich.table import Table
+
+    logger = get_logger(__name__)
+    data_path = _get_default_database_path()
+
+    try:
+        # Parse date if provided
+        snap_date = None
+        if snapshot_date:
+            snap_date = datetime.strptime(snapshot_date, "%Y-%m-%d").date()
+
+        earn_date = None
+        if earnings_date:
+            earn_date = datetime.strptime(earnings_date, "%Y-%m-%d").date()
+
+        # If earnings-date provided, get symbols from earnings
+        earnings_symbols = None
+        if earn_date:
+            earnings_reader = EarningsCalendarReader(str(data_path), "earnings")
+            earnings_df = earnings_reader.get_earnings_on_date(earn_date)
+            if not earnings_df.empty:
+                earnings_symbols = earnings_df["symbol"].unique().tolist()
+                logger.info(f"Found {len(earnings_symbols)} symbols with earnings on {earn_date}")
+            else:
+                console.print(f"[yellow]No earnings found on {earn_date}[/yellow]")
+                return
+
+        # Get snapshots
+        reader = OptionChainSnapshotReader(str(data_path), dataset)
+
+        # Determine which symbols to query
+        query_symbols = None
+        if symbols:
+            # Handle both comma-separated and multiple flag usage
+            query_symbols = []
+            for s in symbols:
+                if ',' in s:
+                    # Split comma-separated values
+                    query_symbols.extend([x.strip().upper() for x in s.split(',')])
+                else:
+                    query_symbols.append(s.upper())
+        elif earnings_symbols:
+            query_symbols = earnings_symbols
+
+        snapshots = reader.get_symbols_with_snapshots(
+            snapshot_date=snap_date,
+            symbols=query_symbols,
+        )
+
+        if snapshots.empty:
+            console.print("[dim]No option chain snapshots found[/dim]")
+            return
+
+        # Display as table
+        title_parts = ["Option Chain Snapshots"]
+        if snap_date:
+            title_parts.append(f"on {snap_date}")
+        if earn_date:
+            title_parts.append(f"(Earnings: {earn_date})")
+
+        table = Table(title=" ".join(title_parts))
+        table.add_column("Symbol", style="cyan")
+        table.add_column("Snapshot Date", style="green")
+        table.add_column("Expirations", justify="right")
+        table.add_column("Strikes", justify="right")
+
+        for _, row in snapshots.iterrows():
+            table.add_row(
+                row["symbol"],
+                str(row["snapshot_date"]),
+                str(row["expiration_count"]),
+                str(row["strike_count"]),
+            )
+
+        console.print(table)
+
+        # Summary
+        total_snapshots = len(snapshots)
+        if earnings_symbols:
+            console.print(f"\n[dim]Total: {total_snapshots} snapshots (out of {len(earnings_symbols)} earnings symbols)[/dim]")
+        else:
+            console.print(f"\n[dim]Total: {total_snapshots} snapshot(s)[/dim]")
+
+    except Exception as e:
+        logger.error(f"list_snapshots.error: {e}", exc_info=True)
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        raise typer.Exit(1)
+
+
+@equity_app.command(name="list")
+def equity_list(
+    earnings_date: Optional[str] = typer.Option(
+        None, "--earnings-date", help="Filter symbols with earnings on this date (YYYY-MM-DD)"
+    ),
+    symbols: Optional[List[str]] = typer.Option(
+        None, "--symbols", "-s", help="Filter specific symbols (comma-separated or repeat flag)"
+    ),
+    bar_size: str = typer.Option(
+        "1 day", "--bar-size", help="Filter by bar size"
+    ),
+    dataset: str = typer.Option("stocks", "--dataset", help="Dataset name"),
+):
+    """
+    List equity bars summary with bar counts and date ranges.
+
+    Displays a table showing all equity symbols with their bar counts,
+    first bar date, and last bar date. Can filter by earnings date or
+    specific symbols.
+
+    Examples:
+        # List all equity bars
+        dlt-ibapi equity list
+
+        # List equity bars for symbols with earnings on specific date
+        dlt-ibapi equity list --earnings-date 2025-11-17
+
+        # List equity bars for specific symbols
+        dlt-ibapi equity list --symbols AAPL,MSFT,GOOGL
+
+        # List equity bars for different bar size
+        dlt-ibapi equity list --bar-size "1 hour"
+
+        # Combine filters
+        dlt-ibapi equity list --earnings-date 2025-11-17 --bar-size "1 day"
+    """
+    from .repositories import EquityBarsReader, EarningsCalendarReader
+    from .cli.models import _get_default_database_path
+
+    logger = get_logger(__name__)
+    data_path = _get_default_database_path()
+
+    try:
+        # Parse earnings date if provided
+        earn_date = None
+        if earnings_date:
+            earn_date = datetime.strptime(earnings_date, "%Y-%m-%d").date()
+
+        # If earnings-date provided, get symbols from earnings
+        earnings_symbols = None
+        if earn_date:
+            earnings_reader = EarningsCalendarReader(str(data_path), "earnings")
+            earnings_df = earnings_reader.get_earnings_on_date(earn_date)
+            if not earnings_df.empty:
+                earnings_symbols = earnings_df["symbol"].unique().tolist()
+                logger.info(f"Found {len(earnings_symbols)} symbols with earnings on {earn_date}")
+            else:
+                console.print(f"[yellow]No earnings found on {earn_date}[/yellow]")
+                return
+
+        # Parse symbols parameter (handle both comma-separated and multiple flags)
+        query_symbols = None
+        if symbols:
+            query_symbols = []
+            for s in symbols:
+                if ',' in s:
+                    # Split comma-separated values
+                    query_symbols.extend([x.strip().upper() for x in s.split(',')])
+                else:
+                    query_symbols.append(s.upper())
+        elif earnings_symbols:
+            query_symbols = earnings_symbols
+
+        # Get equity bars summary
+        reader = EquityBarsReader(str(data_path), dataset)
+        summary = reader.get_symbols_summary(bar_size=bar_size, symbols=query_symbols)
+
+        if summary.empty:
+            console.print("[dim]No equity bars found[/dim]")
+            return
+
+        # Display as table
+        title_parts = ["Backfill Summary"]
+        if earn_date:
+            title_parts.append(f"(Earnings: {earn_date})")
+        if bar_size:
+            title_parts.append(f"[{bar_size}]")
+
+        table = Table(title=" ".join(title_parts))
+        table.add_column("Symbol", style="cyan")
+        table.add_column("Bar Count", justify="right")
+        table.add_column("First Bar", style="dim")
+        table.add_column("Last Bar", style="dim")
+
+        for _, row in summary.iterrows():
+            table.add_row(
+                row['symbol'],
+                str(int(row['bar_count'])),
+                str(row['first_bar'].date()),
+                str(row['last_bar'].date())
+            )
+
+        console.print()
+        console.print(table)
+        console.print()
+        console.print(f"[dim]Total: {len(summary)} symbol(s)[/dim]")
+
+    except ValueError as e:
+        console.print(f"[red]Invalid date format: {e}[/red]")
+        logger.error(f"equity_list.invalid_date: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        logger.error(f"equity_list.error: {e}", exc_info=True)
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -797,6 +1036,12 @@ def backfill_equity(
     earnings_date: Optional[str] = typer.Option(
         None, "--earnings-date", help="Earnings date to backfill all symbols (YYYY-MM-DD, mutually exclusive with symbols)"
     ),
+    has_options: bool = typer.Option(
+        False, "--has-options", help="Filter to only symbols with option chain snapshots (requires --earnings-date or snapshot_date)"
+    ),
+    snapshot_date: Optional[str] = typer.Option(
+        None, "--snapshot-date", help="Date to check for option snapshots (YYYY-MM-DD, defaults to earnings-date)"
+    ),
     start: Optional[str] = typer.Option(
         None, "--start", help="Start date (YYYY-MM-DD, default: 30 days ago)"
     ),
@@ -814,20 +1059,42 @@ def backfill_equity(
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress INFO logs"),
     log_file: Optional[Path] = typer.Option(None, "--log-file", help="Write logs to file with rotation"),
     json_logs: bool = typer.Option(False, "--json-logs", help="Output structured JSON logs"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without doing it"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview operation without fetching data or writing to database (validation only)"),
     client_id: Optional[int] = typer.Option(None, "--client-id", help="IB Gateway client ID (overrides config default)"),
     use_delta: bool = typer.Option(False, "--delta", help="Use Delta Lake format (ACID transactions, time travel)"),
 ):
     """
     Backfill equity bars with gap detection.
 
-    Two modes:
-    1. Explicit symbols: dlt-ibapi backfill-equity AAPL MSFT GOOGL
-    2. Earnings batch: dlt-ibapi backfill-equity --earnings-date 2025-11-13
+    Modes:
+      1. Explicit symbols: Specify symbols directly
+      2. Earnings batch: Load all symbols with earnings on a date
+
+    Option filtering (--has-options):
+      Filter to only symbols with option chain snapshots.
+      Useful for option strategy backtesting to ensure underlying price data exists.
+
+    Dry run (--dry-run):
+      Validates parameters and shows what would be backfilled without:
+      - Connecting to IB Gateway
+      - Fetching any historical data
+      - Writing to the database
+      Use this to verify symbol count, date ranges, and configuration before running.
 
     Examples:
+        # Backfill specific symbols
         dlt-ibapi backfill-equity AAPL MSFT GOOGL --bar-size "1 day"
-        dlt-ibapi backfill-equity --earnings-date 2025-11-13 --start 2025-01-01 --end 2025-11-13
+
+        # Backfill all earnings symbols on a date
+        dlt-ibapi backfill-equity --earnings-date 2025-11-13 --start 2025-01-01
+
+        # Backfill only symbols with option contracts (for option backtesting)
+        dlt-ibapi backfill-equity --earnings-date 2025-11-17 --has-options --start 2025-10-01
+
+        # Preview operation first (dry run)
+        dlt-ibapi backfill-equity --earnings-date 2025-11-17 --has-options --dry-run
+
+        # Custom pipeline with verbose logging
         dlt-ibapi backfill-equity AAPL --pipeline-name my_stocks --verbose
     """
     from .cli import BackfillEquityParams, execute_backfill_equity
@@ -850,6 +1117,63 @@ def backfill_equity(
     start_date = datetime.strptime(start, "%Y-%m-%d").date() if start else date.today() - timedelta(days=30)
     end_date = datetime.strptime(end, "%Y-%m-%d").date() if end else date.today()
     earnings_date_parsed = datetime.strptime(earnings_date, "%Y-%m-%d").date() if earnings_date else None
+    snapshot_date_parsed = datetime.strptime(snapshot_date, "%Y-%m-%d").date() if snapshot_date else earnings_date_parsed
+
+    # Filter by option availability if requested
+    if has_options:
+        if not snapshot_date_parsed:
+            console.print("[red]Error: --has-options requires either --earnings-date or --snapshot-date[/red]")
+            raise typer.Exit(1)
+
+        from .repositories import OptionChainSnapshotReader
+        from .cli.models import _get_default_database_path
+
+        data_path = _get_default_database_path()
+        option_reader = OptionChainSnapshotReader(str(data_path), "option_chains")
+
+        # Get symbols with snapshots
+        snapshots_df = option_reader.get_symbols_with_snapshots(snapshot_date=snapshot_date_parsed)
+
+        if snapshots_df.empty:
+            console.print(f"[yellow]No option chain snapshots found for {snapshot_date_parsed}[/yellow]")
+            if earnings_date_parsed:
+                console.print("[yellow]Run snapshot command first: dlt-ibapi snapshot capture --earnings-date {earnings_date}[/yellow]")
+            raise typer.Exit(1)
+
+        symbols_with_options = snapshots_df["symbol"].unique().tolist()
+        console.print(f"[cyan]Found {len(symbols_with_options)} symbols with option snapshots on {snapshot_date_parsed}[/cyan]")
+
+        # Filter the symbols list
+        if symbols:
+            # Filter explicit symbols
+            symbols = [s for s in symbols if s.upper() in symbols_with_options]
+            if not symbols:
+                console.print("[yellow]None of the specified symbols have option snapshots[/yellow]")
+                raise typer.Exit(1)
+            console.print(f"[cyan]Filtered to {len(symbols)} symbols with options[/cyan]")
+        elif earnings_date_parsed:
+            # In earnings mode, load earnings symbols first, then filter
+            from .repositories import EarningsCalendarReader
+
+            earnings_reader = EarningsCalendarReader(str(data_path), earnings_dataset)
+            earnings_df = earnings_reader.get_earnings_on_date(earnings_date_parsed)
+
+            if earnings_df.empty:
+                console.print(f"[yellow]No earnings found on {earnings_date_parsed}[/yellow]")
+                raise typer.Exit(1)
+
+            all_earnings_symbols = earnings_df["symbol"].unique().tolist()
+            # Filter to only symbols with options
+            symbols = [s for s in all_earnings_symbols if s in symbols_with_options]
+
+            if not symbols:
+                console.print(f"[yellow]No earnings symbols on {earnings_date_parsed} have option snapshots[/yellow]")
+                raise typer.Exit(1)
+
+            console.print(f"[cyan]Filtered {len(all_earnings_symbols)} earnings symbols to {len(symbols)} with options[/cyan]")
+            # Convert to explicit symbol mode
+            earnings_date = None
+            earnings_date_parsed = None
 
     # Display plan
     mode_desc = f"earnings on {earnings_date_parsed}" if earnings_date_parsed else f"{len(symbols)} symbols"
@@ -1540,10 +1864,14 @@ def load_earnings(
         start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
         end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
 
+        # Get data path from storage config
+        from .cli.models import _get_default_database_path
+        data_path = _get_default_database_path()
+
         # Create pipeline
         pipeline = dlt.pipeline(
             pipeline_name=pipeline_name,
-            destination=dlt.destinations.filesystem(bucket_url="data"),
+            destination=dlt.destinations.filesystem(bucket_url=str(data_path)),
             dataset_name=dataset,
         )
 
@@ -1566,7 +1894,9 @@ def load_earnings(
 
         # Show summary
         from .repositories import EarningsCalendarReader
-        reader = EarningsCalendarReader("./data", dataset)
+        from .cli.models import _get_default_database_path
+        data_path = _get_default_database_path()
+        reader = EarningsCalendarReader(str(data_path), dataset)
 
         total = reader.count_earnings()
         min_date, max_date = reader.get_date_range()
@@ -1599,11 +1929,29 @@ def list_earnings(
     """
     from .repositories import EarningsCalendarReader
     from rich.table import Table
+    import traceback
+
+    # Get structured logger from centralized logging utility
+    logger = get_logger(__name__)
 
     console.print(f"\n[bold cyan]Upcoming Earnings ({days_ahead} days)[/bold cyan]\n")
 
     try:
-        reader = EarningsCalendarReader("./data", dataset)
+        # Load storage config to get data path
+        from .cli.models import _get_default_database_path
+        data_path = _get_default_database_path()
+
+        logger.info(
+            "list_earnings.start",
+            days_ahead=days_ahead,
+            dataset=dataset,
+            symbols=symbols,
+            earnings_time=earnings_time,
+            data_path=str(data_path),
+        )
+
+        reader = EarningsCalendarReader(str(data_path), dataset)
+        logger.debug("list_earnings.reader_created", dataset=dataset)
 
         # Get upcoming earnings
         earnings = reader.get_upcoming_earnings(
@@ -1612,7 +1960,14 @@ def list_earnings(
             earnings_time=earnings_time,
         )
 
+        logger.info(
+            "list_earnings.data_loaded",
+            earnings_count=len(earnings),
+            columns=list(earnings.columns) if not earnings.empty else [],
+        )
+
         if earnings.empty:
+            logger.warning("list_earnings.no_data", days_ahead=days_ahead)
             console.print("[dim]No upcoming earnings found[/dim]")
             return
 
@@ -1624,28 +1979,77 @@ def list_earnings(
         table.add_column("Company", style="dim")
         table.add_column("EPS Forecast", justify="right")
 
-        for _, row in earnings.iterrows():
-            table.add_row(
-                row["symbol"],
-                str(row["earnings_date"]),
-                row.get("earnings_time", "UNKNOWN"),
-                row.get("company_name", "")[:30],  # Truncate long names
-                f"${row['eps_forecast']:.2f}" if pd.notna(row.get("eps_forecast")) else "N/A",
-            )
+        for idx, row in earnings.iterrows():
+            try:
+                # Get EPS forecast safely
+                eps_forecast = row.get("eps_forecast")
+                eps_display = "N/A"
+
+                logger.debug(
+                    "list_earnings.row_processing",
+                    index=idx,
+                    symbol=row.get("symbol"),
+                    eps_forecast_raw=eps_forecast,
+                    eps_forecast_type=type(eps_forecast).__name__,
+                )
+
+                # Check if eps_forecast is not None and is a number
+                if eps_forecast is not None:
+                    try:
+                        # Try to convert to float and check if it's valid
+                        eps_value = float(eps_forecast)
+                        if not (eps_value != eps_value):  # Check for NaN (NaN != NaN is True)
+                            eps_display = f"${eps_value:.2f}"
+                    except (ValueError, TypeError) as conv_err:
+                        logger.warning(
+                            "list_earnings.eps_conversion_failed",
+                            symbol=row.get("symbol"),
+                            eps_forecast=eps_forecast,
+                            error=str(conv_err),
+                        )
+
+                table.add_row(
+                    row["symbol"],
+                    str(row["earnings_date"]),
+                    row.get("earnings_time", "UNKNOWN"),
+                    row.get("company_name", "")[:30],  # Truncate long names
+                    eps_display,
+                )
+            except Exception as row_err:
+                logger.error(
+                    "list_earnings.row_error",
+                    index=idx,
+                    symbol=row.get("symbol"),
+                    error=str(row_err),
+                    traceback=traceback.format_exc(),
+                )
+                # Continue with other rows even if one fails
+                continue
 
         console.print(table)
         console.print(f"\n[dim]Total: {len(earnings)} earnings event(s)[/dim]")
 
+        logger.info("list_earnings.complete", earnings_count=len(earnings))
+
     except ValueError as e:
+        logger.error("list_earnings.value_error", error=str(e), traceback=traceback.format_exc())
         if "does not exist" in str(e):
             console.print(f"[red]✗[/red] Earnings dataset not found: {dataset}")
             console.print(f"\n[yellow]Load earnings data first:[/yellow]")
             console.print(f"  dlt-ibapi load-earnings /path/to/earnings.json")
         else:
-            console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+            console.print(f"\n[red bold]✗ ValueError:[/red bold] {str(e)}")
+            console.print(f"[dim]See logs for details[/dim]")
         raise typer.Exit(1)
     except Exception as e:
-        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        logger.error(
+            "list_earnings.error",
+            error=str(e),
+            error_type=type(e).__name__,
+            traceback=traceback.format_exc(),
+        )
+        console.print(f"\n[red bold]✗ Error ({type(e).__name__}):[/red bold] {str(e)}")
+        console.print(f"[dim]Use --verbose for detailed logs[/dim]")
         raise typer.Exit(1)
 
 
@@ -1851,6 +2255,342 @@ def version():
     """Show dlt-ibapi version."""
     from . import __version__
     console.print(f"dlt-ibapi version: {__version__}")
+
+
+# ============================================================================
+# Strategy Commands
+# ============================================================================
+
+
+@strategy_app.command(name="iv-rank")
+def strategy_iv_rank(
+    earnings_date: str = typer.Option(..., "--earnings-date", help="Earnings date (YYYY-MM-DD)"),
+    symbols: Optional[List[str]] = typer.Option(
+        None,
+        "--symbols",
+        "-s",
+        help="Filter by specific symbols (comma-separated or multiple -s flags)",
+    ),
+    earnings_time: Optional[str] = typer.Option(
+        None,
+        "--earnings-time",
+        help="Filter by earnings time: PRE_MARKET, AFTER_HOURS, or UNKNOWN",
+    ),
+    option_type: str = typer.Option("C", "--option-type", help="Option type: C (calls) or P (puts)"),
+    bar_size: str = typer.Option("5 mins", "--bar-size", help="Bar size for option data"),
+    entry_hour: int = typer.Option(15, "--entry-hour", help="Entry hour (0-23)"),
+    entry_minute: int = typer.Option(0, "--entry-minute", help="Entry minute (0-59)"),
+    top_n: Optional[int] = typer.Option(None, "--top-n", "-n", help="Limit to top N candidates"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Save results to CSV file"),
+    dataset_earnings: str = typer.Option("earnings", "--dataset-earnings", help="Earnings dataset name"),
+    dataset_options: str = typer.Option("options", "--dataset-options", help="Options dataset name"),
+    dataset_stocks: str = typer.Option("stocks", "--dataset-stocks", help="Stocks dataset name"),
+    dataset_chains: str = typer.Option("option_chains", "--dataset-chains", help="Option chains dataset name"),
+):
+    """
+    Rank calendar spread candidates by IV ratio for a given earnings date.
+
+    Calculates IV ratios (short IV / long IV) for all symbols with earnings on
+    the specified date and ranks them from highest to lowest. Higher IV ratios
+    historically correlate with better P&L.
+
+    Example:
+        dlt-ibapi strategy iv-rank --earnings-date 2025-11-13 --top-n 10
+        dlt-ibapi strategy iv-rank --earnings-date 2025-11-13 --earnings-time PRE_MARKET
+        dlt-ibapi strategy iv-rank --earnings-date 2025-11-13 -s AAPL,MSFT --output results.csv
+    """
+    from datetime import datetime
+    from dlt_ibapi.cli.strategy import execute_iv_rank
+    from dlt_ibapi.cli.models import IVRankParams
+    from dlt_ibapi.strategies.display import (
+        create_iv_rank_table,
+        create_earnings_time_warning,
+    )
+    from delta_lake_storage import get_config as get_storage_config
+
+    try:
+        # Parse earnings date
+        try:
+            parsed_date = datetime.strptime(earnings_date, "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error: Invalid date format '{earnings_date}'. Use YYYY-MM-DD.[/red]")
+            raise typer.Exit(1)
+
+        # Parse symbols parameter (handle comma-separated and multiple flags)
+        query_symbols = None
+        if symbols:
+            query_symbols = []
+            for s in symbols:
+                if ',' in s:
+                    query_symbols.extend([x.strip().upper() for x in s.split(',')])
+                else:
+                    query_symbols.append(s.upper())
+
+        # Validate earnings_time
+        if earnings_time and earnings_time not in ['PRE_MARKET', 'AFTER_HOURS', 'UNKNOWN']:
+            console.print(
+                "[red]Error: earnings-time must be PRE_MARKET, AFTER_HOURS, or UNKNOWN[/red]"
+            )
+            raise typer.Exit(1)
+
+        # Get database path from storage config
+        storage_cfg = get_storage_config()
+        database_path = Path(storage_cfg.storage.base_path)
+
+        # Create parameters model
+        params = IVRankParams(
+            earnings_date=parsed_date,
+            symbols=query_symbols,
+            earnings_time=earnings_time,
+            option_type=option_type,
+            bar_size=bar_size,
+            entry_hour=entry_hour,
+            entry_minute=entry_minute,
+            top_n=top_n,
+            output_file=output,
+            database_path=database_path,
+            earnings_dataset=dataset_earnings,
+            options_dataset=dataset_options,
+            stocks_dataset=dataset_stocks,
+            option_chains_dataset=dataset_chains,
+        )
+
+        # Execute IV ranking
+        console.print(f"\n[bold cyan]IV Ratio Ranking - {earnings_date}[/bold cyan]\n")
+
+        # Show earnings time warning if specified
+        if earnings_time:
+            warning = create_earnings_time_warning(earnings_time)
+            console.print(warning)
+            console.print()
+
+        with console.status("[bold green]Ranking candidates by IV ratio..."):
+            result = execute_iv_rank(params)
+
+        # Display results
+        if not result.success:
+            console.print(f"\n[red bold]✗ Error:[/red bold] {result.error}")
+            raise typer.Exit(1)
+
+        if not result.ranked_candidates:
+            console.print("\n[yellow]No candidates found matching criteria[/yellow]")
+            console.print(f"Total symbols with earnings: {result.total_symbols}")
+            console.print(f"Symbols with option data: {result.tradable_symbols}")
+            raise typer.Exit(0)
+
+        # Create and display Rich table
+        candidates_data = [c.model_dump() for c in result.ranked_candidates]
+        table = create_iv_rank_table(
+            candidates=candidates_data,
+            title=f"IV Ratio Rankings - {earnings_date}",
+        )
+        console.print(table)
+
+        # Summary
+        console.print(f"\n[bold]Summary:[/bold]")
+        console.print(f"  Total symbols with earnings: {result.total_symbols}")
+        console.print(f"  Symbols with option data: {result.tradable_symbols}")
+        console.print(f"  Ranked candidates: {len(result.ranked_candidates)}")
+        console.print(f"  Duration: {result.duration_seconds:.1f}s")
+
+        if output:
+            console.print(f"\n[green]✓ Results saved to: {output}[/green]")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        import traceback
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise typer.Exit(1)
+
+
+@strategy_app.command(name="select")
+def strategy_select(
+    earnings_date: str = typer.Option(..., "--earnings-date", help="Earnings date (YYYY-MM-DD)"),
+    symbols: Optional[List[str]] = typer.Option(
+        None,
+        "--symbols",
+        "-s",
+        help="Filter by specific symbols (comma-separated or multiple -s flags)",
+    ),
+    earnings_time: Optional[str] = typer.Option(
+        None,
+        "--earnings-time",
+        help="Filter by earnings time: PRE_MARKET, AFTER_HOURS, or UNKNOWN",
+    ),
+    option_type: str = typer.Option("C", "--option-type", help="Option type: C (calls) or P (puts)"),
+    bar_size: str = typer.Option("5 mins", "--bar-size", help="Bar size for option data"),
+    entry_hour: int = typer.Option(15, "--entry-hour", help="Entry hour (0-23)"),
+    entry_minute: int = typer.Option(0, "--entry-minute", help="Entry minute (0-59)"),
+    min_iv_ratio: Optional[float] = typer.Option(
+        None,
+        "--min-iv-ratio",
+        help="Minimum IV ratio threshold (e.g., 1.5 for top performers)",
+    ),
+    max_entry_cost: Optional[float] = typer.Option(
+        None,
+        "--max-entry-cost",
+        help="Maximum entry cost per contract (e.g., 200)",
+    ),
+    min_quartile: Optional[str] = typer.Option(
+        None,
+        "--min-quartile",
+        help="Minimum quartile: Q1, Q2, Q3, or Q4 (Q4 = top 25%)",
+    ),
+    profitable_only: bool = typer.Option(
+        False,
+        "--profitable-only",
+        help="Only include historically profitable trades",
+    ),
+    top_n: Optional[int] = typer.Option(None, "--top-n", "-n", help="Limit to top N candidates after filtering"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Save results to CSV file"),
+    dataset_earnings: str = typer.Option("earnings", "--dataset-earnings", help="Earnings dataset name"),
+    dataset_options: str = typer.Option("options", "--dataset-options", help="Options dataset name"),
+    dataset_stocks: str = typer.Option("stocks", "--dataset-stocks", help="Stocks dataset name"),
+    dataset_chains: str = typer.Option("option_chains", "--dataset-chains", help="Option chains dataset name"),
+):
+    """
+    Select top calendar spread candidates with filtering criteria.
+
+    Applies IV ratio, cost, and profitability filters to select the best
+    candidates for calendar spread trading. Based on historical analysis
+    showing strong correlation between IV ratio and P&L.
+
+    Example:
+        dlt-ibapi strategy select --earnings-date 2025-11-13 --min-iv-ratio 1.5 --top-n 10
+        dlt-ibapi strategy select --earnings-date 2025-11-13 --min-quartile Q4 --max-entry-cost 200
+        dlt-ibapi strategy select --earnings-date 2025-11-13 --profitable-only --output trades.csv
+    """
+    from datetime import datetime
+    from dlt_ibapi.cli.strategy import execute_strategy_select
+    from dlt_ibapi.cli.models import StrategySelectParams
+    from dlt_ibapi.strategies.display import (
+        create_iv_rank_table,
+        create_selection_stats_table,
+        create_earnings_time_warning,
+    )
+    from delta_lake_storage import get_config as get_storage_config
+
+    try:
+        # Parse earnings date
+        try:
+            parsed_date = datetime.strptime(earnings_date, "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error: Invalid date format '{earnings_date}'. Use YYYY-MM-DD.[/red]")
+            raise typer.Exit(1)
+
+        # Parse symbols parameter (handle comma-separated and multiple flags)
+        query_symbols = None
+        if symbols:
+            query_symbols = []
+            for s in symbols:
+                if ',' in s:
+                    query_symbols.extend([x.strip().upper() for x in s.split(',')])
+                else:
+                    query_symbols.append(s.upper())
+
+        # Validate earnings_time
+        if earnings_time and earnings_time not in ['PRE_MARKET', 'AFTER_HOURS', 'UNKNOWN']:
+            console.print(
+                "[red]Error: earnings-time must be PRE_MARKET, AFTER_HOURS, or UNKNOWN[/red]"
+            )
+            raise typer.Exit(1)
+
+        # Validate min_quartile
+        if min_quartile and min_quartile not in ['Q1', 'Q2', 'Q3', 'Q4']:
+            console.print("[red]Error: min-quartile must be Q1, Q2, Q3, or Q4[/red]")
+            raise typer.Exit(1)
+
+        # Get database path from storage config
+        storage_cfg = get_storage_config()
+        database_path = Path(storage_cfg.storage.base_path)
+
+        # Create parameters model
+        params = StrategySelectParams(
+            earnings_date=parsed_date,
+            symbols=query_symbols,
+            earnings_time=earnings_time,
+            option_type=option_type,
+            bar_size=bar_size,
+            entry_hour=entry_hour,
+            entry_minute=entry_minute,
+            min_iv_ratio=min_iv_ratio,
+            max_entry_cost=max_entry_cost,
+            min_quartile=min_quartile,
+            profitable_only=profitable_only,
+            top_n=top_n,
+            output_file=output,
+            database_path=database_path,
+            earnings_dataset=dataset_earnings,
+            options_dataset=dataset_options,
+            stocks_dataset=dataset_stocks,
+            option_chains_dataset=dataset_chains,
+        )
+
+        # Execute strategy selection
+        console.print(f"\n[bold cyan]Calendar Spread Selection - {earnings_date}[/bold cyan]\n")
+
+        # Show earnings time warning if specified
+        if earnings_time:
+            warning = create_earnings_time_warning(earnings_time)
+            console.print(warning)
+            console.print()
+
+        with console.status("[bold green]Selecting candidates with filters..."):
+            result = execute_strategy_select(params)
+
+        # Display results
+        if not result.success:
+            console.print(f"\n[red bold]✗ Error:[/red bold] {result.error}")
+            raise typer.Exit(1)
+
+        if not result.selected_candidates:
+            console.print("\n[yellow]No candidates found matching selection criteria[/yellow]")
+            console.print(f"Total symbols evaluated: {result.total_evaluated}")
+
+            # Show applied filters
+            if result.selection_criteria:
+                console.print("\n[bold]Applied Filters:[/bold]")
+                for key, value in result.selection_criteria.items():
+                    formatted_key = key.replace('_', ' ').title()
+                    console.print(f"  {formatted_key}: {value}")
+
+            raise typer.Exit(0)
+
+        # Create and display candidates table
+        candidates_data = [c.model_dump() for c in result.selected_candidates]
+        candidates_table = create_iv_rank_table(
+            candidates=candidates_data,
+            title=f"Selected Candidates - {earnings_date}",
+        )
+        console.print(candidates_table)
+
+        # Create and display statistics table
+        stats_table = create_selection_stats_table(
+            statistics=result.statistics,
+            earnings_date=earnings_date,
+            selection_criteria=result.selection_criteria,
+        )
+        console.print("\n")
+        console.print(stats_table)
+
+        # Summary
+        console.print(f"\n[bold]Results:[/bold]")
+        console.print(f"  Total evaluated: {result.total_evaluated}")
+        console.print(f"  Selected: {result.selected_count}")
+        console.print(f"  Duration: {result.duration_seconds:.1f}s")
+
+        if output:
+            console.print(f"\n[green]✓ Results saved to: {output}[/green]")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        import traceback
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise typer.Exit(1)
 
 
 def main():

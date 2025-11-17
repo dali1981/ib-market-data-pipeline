@@ -161,8 +161,12 @@ def execute_snapshot(
                 # Read back snapshot to get accurate counts
                 from dlt_ibapi.repositories import OptionChainSnapshotReader
 
+                # Get storage path from config
+                storage_cfg = get_storage_config()
+                database_path = storage_cfg.get("storage", {}).get("base_path", "data")
+
                 reader = OptionChainSnapshotReader(
-                    database_path="data",
+                    database_path=database_path,
                     dataset_name=params.dataset_name,
                 )
 

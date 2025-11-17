@@ -8,6 +8,7 @@ import json
 from typing import List, Set
 from pathlib import Path
 
+import pandas as pd
 from ib_connector import IBRuntime
 
 from dlt_ibapi.config_loader import load_config
@@ -38,17 +39,41 @@ def _load_symbols_from_earnings_db(
     Returns:
         List of unique symbols
     """
+    logger.info(
+        "load_symbols_from_earnings.start",
+        database_path=str(database_path),
+        earnings_date=str(earnings_date),
+    )
+
     reader = EarningsCalendarReader(
         database_path=str(database_path),
         dataset_name="earnings",
     )
 
+    logger.debug("load_symbols_from_earnings.reader_created")
+
     df = reader.get_earnings_on_date(earnings_date)
+
+    logger.info(
+        "load_symbols_from_earnings.data_loaded",
+        rows=len(df),
+        columns=list(df.columns) if not df.empty else [],
+    )
+
     if df.empty:
+        logger.warning(
+            "load_symbols_from_earnings.no_data",
+            earnings_date=str(earnings_date),
+            database_path=str(database_path),
+        )
         return []
 
     symbols = df["symbol"].unique().tolist()
-    logger.info(f"Loaded {len(symbols)} symbols from earnings on {earnings_date}")
+    logger.info(
+        "load_symbols_from_earnings.complete",
+        symbol_count=len(symbols),
+        symbols=symbols[:10],  # Show first 10
+    )
     return symbols
 
 
@@ -242,12 +267,20 @@ def _execute_resolve_equity_contracts(
             if runtime is None:
                 config = load_config()
                 conn_cfg = config.connection
+                logger.info(
+                    "connect_to_ib_gateway",
+                    host=conn_cfg.host,
+                    port=conn_cfg.port,
+                    client_id=conn_cfg.client_id,
+                    ready_timeout=conn_cfg.ready_timeout,
+                )
                 runtime = IBRuntime(
                     host=conn_cfg.host,
                     port=conn_cfg.port,
                     client_id=conn_cfg.client_id,
                 )
                 runtime.start(ready_timeout=conn_cfg.ready_timeout)
+                logger.info("ib_gateway_connected", status="ready")
                 runtime_started = True
             else:
                 runtime_started = False
@@ -376,13 +409,40 @@ def _execute_resolve_option_contracts(
         # Step 2: Initialize cache and runtime
         cache = ContractCache(base_path=str(params.cache_path))
 
-        # Check which contracts are already cached
+        # Check which contracts are already cached - optimized bulk query
+        logger.info(f"Checking cache for {len(contracts)} contracts...")
+
+        # Get unique symbols
+        unique_symbols = list(set([symbol for symbol, _, _, _ in contracts]))
+        logger.info(f"Loading cache for {len(unique_symbols)} symbols...")
+
+        # Load all contracts from cache in one query (much faster than individual lookups)
+        cached_df_list = []
+        for sym in unique_symbols:
+            df = cache.get_contracts_by_symbol(sym, sec_type="OPT")
+            if not df.empty:
+                cached_df_list.append(df)
+
+        if cached_df_list:
+            all_cached = pd.concat(cached_df_list, ignore_index=True)
+            logger.info(f"Loaded {len(all_cached)} contracts from cache")
+        else:
+            all_cached = pd.DataFrame()
+            logger.info("No contracts found in cache")
+
+        # Create lookup set for fast O(1) checking
+        cached_set = set()
+        if not all_cached.empty:
+            for _, row in all_cached.iterrows():
+                key = (row["symbol"], row["last_trade_date"], row["strike"], row["right"])
+                cached_set.add(key)
+
+        # Partition contracts into cached vs new
         cached_contracts = []
         new_contracts = []
-
         for symbol, expiry, strike, right in contracts:
-            cached = cache.get_option_contract(symbol, expiry, strike, right)
-            if cached:
+            key = (symbol, expiry, strike, right)
+            if key in cached_set:
                 cached_contracts.append((symbol, expiry, strike, right))
             else:
                 new_contracts.append((symbol, expiry, strike, right))
@@ -399,12 +459,20 @@ def _execute_resolve_option_contracts(
             if runtime is None:
                 config = load_config()
                 conn_cfg = config.connection
+                logger.info(
+                    "connect_to_ib_gateway",
+                    host=conn_cfg.host,
+                    port=conn_cfg.port,
+                    client_id=conn_cfg.client_id,
+                    ready_timeout=conn_cfg.ready_timeout,
+                )
                 runtime = IBRuntime(
                     host=conn_cfg.host,
                     port=conn_cfg.port,
                     client_id=conn_cfg.client_id,
                 )
                 runtime.start(ready_timeout=conn_cfg.ready_timeout)
+                logger.info("ib_gateway_connected", status="ready")
                 runtime_started = True
             else:
                 runtime_started = False
