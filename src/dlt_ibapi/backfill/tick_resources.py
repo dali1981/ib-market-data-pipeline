@@ -36,9 +36,12 @@ from datetime import datetime, date, timedelta
 from typing import Iterator, Literal, Optional
 from ib_connector import IBRuntime, HistoricalTick
 from ib_connector.contracts import make_option
+import logging
 
 from ..config import IBConnectionConfig
 from ..transformers import normalize_historical_tick_data
+
+logger = logging.getLogger(__name__)
 
 
 @dlt.resource(
@@ -131,6 +134,13 @@ def backfill_option_ticks_bid_ask(
             timezone=timezone
         )
 
+        logger.info(f"Fetched {len(ticks)} ticks for {underlying} ${strike}{right}")
+        if ticks:
+            first = ticks[0]
+            last = ticks[-1]
+            logger.info(f"First tick: {first.time}, bid={first.bid_price}, ask={first.ask_price}")
+            logger.info(f"Last tick: {last.time}, bid={last.bid_price}, ask={last.ask_price}")
+
         # Transform and yield
         for tick in ticks:
             yield normalize_historical_tick_data(
@@ -202,6 +212,7 @@ def backfill_option_ticks_trades(
             curr=currency
         )
 
+        # Fetch ticks
         ticks = runtime.tick_historical.fetch_historical_ticks_range(
             contract=contract,
             start_date=start_datetime,
@@ -210,6 +221,11 @@ def backfill_option_ticks_trades(
             use_rth=use_rth,
             timezone=timezone
         )
+
+        logger.info(f"Fetched {len(ticks)} trade ticks for {underlying} ${strike}{right}")
+        if ticks:
+            first = ticks[0]
+            logger.info(f"First tick: {first.time}, price={first.price}, size={first.size}")
 
         for tick in ticks:
             yield normalize_historical_tick_data(
