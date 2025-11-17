@@ -141,15 +141,25 @@ def backfill_option_ticks_bid_ask(
         try:
             details_list = contract_svc.fetch(contract)
         except RuntimeError as e:
-            logger.error(f"Contract resolution failed: {e}")
-            logger.error(f"Contract details: symbol={underlying}, strike={strike}, right={right}, expiry={expiry.strftime('%Y%m%d')}, exchange={exchange}")
+            error_msg = str(e)
+            logger.error(
+                f"Contract resolution failed for {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}",
+                extra={
+                    "symbol": underlying,
+                    "strike": strike,
+                    "right": right,
+                    "expiry": expiry.strftime('%Y%m%d'),
+                    "exchange": exchange,
+                    "ib_error": error_msg
+                }
+            )
             logger.error("Possible causes:")
             logger.error("  1. Contract does not exist (wrong strike/expiry)")
             logger.error("  2. Option has already expired")
             logger.error("  3. Symbol is incorrect or not available")
             raise RuntimeError(
                 f"Cannot resolve contract {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}. "
-                f"Contract may not exist or has expired. Original error: {e}"
+                f"Contract may not exist or has expired. IB error: {error_msg}"
             )
 
         if not details_list:
@@ -299,15 +309,25 @@ def backfill_option_ticks_trades(
         try:
             details_list = contract_svc.fetch(contract)
         except RuntimeError as e:
-            logger.error(f"Contract resolution failed: {e}")
-            logger.error(f"Contract details: symbol={underlying}, strike={strike}, right={right}, expiry={expiry.strftime('%Y%m%d')}, exchange={exchange}")
+            error_msg = str(e)
+            logger.error(
+                f"Contract resolution failed for {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}",
+                extra={
+                    "symbol": underlying,
+                    "strike": strike,
+                    "right": right,
+                    "expiry": expiry.strftime('%Y%m%d'),
+                    "exchange": exchange,
+                    "ib_error": error_msg
+                }
+            )
             logger.error("Possible causes:")
             logger.error("  1. Contract does not exist (wrong strike/expiry)")
             logger.error("  2. Option has already expired")
             logger.error("  3. Symbol is incorrect or not available")
             raise RuntimeError(
                 f"Cannot resolve contract {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}. "
-                f"Contract may not exist or has expired. Original error: {e}"
+                f"Contract may not exist or has expired. IB error: {error_msg}"
             )
 
         if not details_list:
