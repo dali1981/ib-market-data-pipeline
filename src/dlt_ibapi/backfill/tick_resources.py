@@ -35,7 +35,7 @@ import dlt
 from datetime import datetime, date, timedelta
 from typing import Iterator, Literal, Optional
 import pytz
-from ib_connector import IBRuntime, HistoricalTick
+from ib_connector import IBRuntime
 from ib_connector.contracts import make_option
 from ib_connector.services import ContractDetailsService, TickHistoricalService
 import logging
