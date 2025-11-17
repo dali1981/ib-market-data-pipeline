@@ -135,14 +135,33 @@ def backfill_option_ticks_bid_ask(
         )
 
         # Resolve contract to get ConId
+        logger.info(f"Resolving contract: {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}")
         contract_svc = ContractDetailsService(runtime)
-        details_list = contract_svc.fetch(contract)
+
+        try:
+            details_list = contract_svc.fetch(contract)
+        except RuntimeError as e:
+            logger.error(f"Contract resolution failed: {e}")
+            logger.error(f"Contract details: symbol={underlying}, strike={strike}, right={right}, expiry={expiry.strftime('%Y%m%d')}, exchange={exchange}")
+            logger.error("Possible causes:")
+            logger.error("  1. Contract does not exist (wrong strike/expiry)")
+            logger.error("  2. Option has already expired")
+            logger.error("  3. Symbol is incorrect or not available")
+            raise RuntimeError(
+                f"Cannot resolve contract {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}. "
+                f"Contract may not exist or has expired. Original error: {e}"
+            )
+
         if not details_list:
-            logger.error(f"No contract details found for {underlying} ${strike}{right}")
-            return
+            logger.error(f"No contract details found for {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}")
+            logger.error(f"Contract: symbol={underlying}, strike={strike}, right={right}, expiry={expiry.strftime('%Y%m%d')}, exchange={exchange}")
+            raise RuntimeError(
+                f"No contract found for {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}. "
+                "Contract may not exist or has expired."
+            )
 
         contract = details_list[0].contract
-        logger.info(f"Contract resolved: ConId={contract.conId}")
+        logger.info(f"✓ Contract resolved: ConId={contract.conId}, LocalSymbol={contract.localSymbol}")
 
         # Create tick service
         tick_svc = TickHistoricalService(runtime)
@@ -274,14 +293,33 @@ def backfill_option_ticks_trades(
         )
 
         # Resolve contract to get ConId
+        logger.info(f"Resolving contract: {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}")
         contract_svc = ContractDetailsService(runtime)
-        details_list = contract_svc.fetch(contract)
+
+        try:
+            details_list = contract_svc.fetch(contract)
+        except RuntimeError as e:
+            logger.error(f"Contract resolution failed: {e}")
+            logger.error(f"Contract details: symbol={underlying}, strike={strike}, right={right}, expiry={expiry.strftime('%Y%m%d')}, exchange={exchange}")
+            logger.error("Possible causes:")
+            logger.error("  1. Contract does not exist (wrong strike/expiry)")
+            logger.error("  2. Option has already expired")
+            logger.error("  3. Symbol is incorrect or not available")
+            raise RuntimeError(
+                f"Cannot resolve contract {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}. "
+                f"Contract may not exist or has expired. Original error: {e}"
+            )
+
         if not details_list:
-            logger.error(f"No contract details found for {underlying} ${strike}{right}")
-            return
+            logger.error(f"No contract details found for {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}")
+            logger.error(f"Contract: symbol={underlying}, strike={strike}, right={right}, expiry={expiry.strftime('%Y%m%d')}, exchange={exchange}")
+            raise RuntimeError(
+                f"No contract found for {underlying} ${strike}{right} exp {expiry.strftime('%Y%m%d')}. "
+                "Contract may not exist or has expired."
+            )
 
         contract = details_list[0].contract
-        logger.info(f"Contract resolved: ConId={contract.conId}")
+        logger.info(f"✓ Contract resolved: ConId={contract.conId}, LocalSymbol={contract.localSymbol}")
 
         # Create tick service
         tick_svc = TickHistoricalService(runtime)
