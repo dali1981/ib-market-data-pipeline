@@ -61,6 +61,7 @@ def backfill_option_ticks_bid_ask(
     currency: str = "USD",
     connection_config: Optional[IBConnectionConfig] = None,
     use_rth: bool = True,
+    timezone: str = "US/Eastern",
 ) -> Iterator[dict]:
     """
     Backfill bid/ask tick data for a single option contract.
@@ -70,12 +71,13 @@ def backfill_option_ticks_bid_ask(
         expiry: Option expiration date
         strike: Strike price
         right: 'C' for call, 'P' for put
-        start_datetime: Start time (UTC)
-        end_datetime: End time (UTC)
+        start_datetime: Start time (local time in specified timezone)
+        end_datetime: End time (local time in specified timezone)
         exchange: Exchange (default SMART)
         currency: Currency (default USD)
         connection_config: IB connection config
         use_rth: Use regular trading hours only
+        timezone: Timezone for datetime formatting (default US/Eastern)
 
     Yields:
         Normalized tick dictionaries
@@ -125,7 +127,8 @@ def backfill_option_ticks_bid_ask(
             start_date=start_datetime,
             end_date=end_datetime,
             tick_type='BID_ASK',
-            use_rth=use_rth
+            use_rth=use_rth,
+            timezone=timezone
         )
 
         # Transform and yield
@@ -160,6 +163,7 @@ def backfill_option_ticks_trades(
     currency: str = "USD",
     connection_config: Optional[IBConnectionConfig] = None,
     use_rth: bool = True,
+    timezone: str = "US/Eastern",
 ) -> Iterator[dict]:
     """
     Backfill trade tick data for a single option contract.
@@ -169,12 +173,13 @@ def backfill_option_ticks_trades(
         expiry: Option expiration date
         strike: Strike price
         right: 'C' for call, 'P' for put
-        start_datetime: Start time (UTC)
-        end_datetime: End time (UTC)
+        start_datetime: Start time (local time in specified timezone)
+        end_datetime: End time (local time in specified timezone)
         exchange: Exchange (default SMART)
         currency: Currency (default USD)
         connection_config: IB connection config
         use_rth: Use regular trading hours only
+        timezone: Timezone for datetime formatting (default US/Eastern)
 
     Yields:
         Normalized tick dictionaries
@@ -202,7 +207,8 @@ def backfill_option_ticks_trades(
             start_date=start_datetime,
             end_date=end_datetime,
             tick_type='TRADES',
-            use_rth=use_rth
+            use_rth=use_rth,
+            timezone=timezone
         )
 
         for tick in ticks:

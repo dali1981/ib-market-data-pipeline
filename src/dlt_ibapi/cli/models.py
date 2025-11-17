@@ -468,6 +468,7 @@ class BackfillTicksParams(BaseModel):
     exchange: str = Field('SMART', description="Exchange")
     currency: str = Field('USD', description="Currency")
     use_rth: bool = Field(True, description="Use regular trading hours only")
+    timezone: str = Field('US/Eastern', description="Timezone for datetime formatting")
     database_path: Path = Field(default_factory=_get_default_database_path, description="Path to database")
     dataset_name: str = Field('option_ticks', description="Dataset name")
     pipeline_name: str = Field('ib_tick_backfill', description="DLT pipeline name")

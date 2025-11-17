@@ -51,6 +51,7 @@ def execute_backfill_ticks(
                 currency=params.currency,
                 connection_config=connection_config,
                 use_rth=params.use_rth,
+                timezone=params.timezone,
             )
         else:  # trades
             resource = backfill_option_ticks_trades(
@@ -64,6 +65,7 @@ def execute_backfill_ticks(
                 currency=params.currency,
                 connection_config=connection_config,
                 use_rth=params.use_rth,
+                timezone=params.timezone,
             )
 
         # Run pipeline
