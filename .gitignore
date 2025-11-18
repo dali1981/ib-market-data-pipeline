@@ -36,6 +36,7 @@ ENV/
 # DLT data and cache
 data/
 data_*/
+earningscalendardlt/
 .dlt/
 .dlt-ibapi/
 
