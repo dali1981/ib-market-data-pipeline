@@ -376,16 +376,9 @@ uv run dlt-ibapi resolve-contracts AAPL MSFT GOOGL
 uv run dlt-ibapi resolve-contracts --earnings-date 2025-11-13
 uv run dlt-ibapi resolve-contracts --earnings-file earnings.json
 
-# Batch calendar spread tick backfill (NEW: 2025-11-17)
-# Separate PRE_MARKET and AFTER_HOURS earnings for optimal data availability
-uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing PRE_MARKET  # Run same day
-uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing AFTER_HOURS # Run next day
-uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --top-n 10  # Limit to top 10 opportunities
-uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17  # Process all symbols (--top-n now optional)
-
-# Progressive downloads (NEW: separate entry/exit windows)
-uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing PRE_MARKET --entry  # Entry only (Fri 3-4pm)
-uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing PRE_MARKET --exit   # Exit only (Mon 9-10am)
+# Load earnings calendar and resolve contracts
+uv run dlt-ibapi load-earnings earnings.json --start-date 2025-11-01
+uv run dlt-ibapi resolve-contracts --earnings-date 2025-11-17
 
 # Database statistics
 uv run dlt-ibapi stats ./data --dataset stocks

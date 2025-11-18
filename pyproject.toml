@@ -2,24 +2,47 @@
 [project]
 name = "dlt-ibapi"
 version = "0.1.0"
-description = "DLT connector for Interactive Brokers - ingest market data via IB Gateway/TWS into data pipelines"
-requires-python = ">=3.12"
+description = "Production-ready market data pipeline for Interactive Brokers with gap-aware backfilling and Parquet storage"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Mohamed Ali", email = "your.email@example.com"}
+]
+keywords = [
+    "interactive-brokers",
+    "market-data",
+    "dlt",
+    "data-pipeline",
+    "parquet",
+    "financial-data",
+    "etl",
+    "data-engineering"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
-    "delta-lake-storage",
-    "dlt[filesystem,parquet,duckdb]>=0.4.0", # Added filesystem and parquet extras
+    "dlt[filesystem,parquet,duckdb]>=0.4.0",
     "ib-connector>=0.1.0",
-    "matplotlib>=3.10.7", # For equity curve plots in backtesting
-    "notebook>=7.4.7",
-    "omegaconf>=2.3.0",
-    "pandas>=2.3.3",
-    "pandas-market-calendars>=5.1.1",
+    "matplotlib>=3.9.0",
+    "notebook>=7.0.0",
+    "pandas>=2.0.0",
+    "pandas-market-calendars>=5.0.0",
     "pyarrow>=21.0.0",
     "pydantic>=2.0.0",
-    "rich>=14.2.0",
-    "scipy>=1.15.3",
-    "structlog>=25.5.0",
-    "tools>=0.1.0", # Shared backtesting framework
-    "typer>=0.19.2",
+    "rich>=14.0.0",
+    "structlog>=25.0.0",
+    "typer>=0.19.0",
 ]
 
 [project.scripts]
@@ -34,8 +57,6 @@ dev = [
 
 [tool.uv.sources]
 ib-connector = { path = "../ib-connector", editable = true }
-tools = { path = "../tools", editable = true }
-delta-lake-storage = { path = "../delta-lake-storage" }
 
 [build-system]
 requires = ["hatchling"]
