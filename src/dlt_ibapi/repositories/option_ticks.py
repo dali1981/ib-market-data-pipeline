@@ -33,6 +33,15 @@ class OptionTicksReader(ParquetReaderBase):
         """Table name for option ticks (default to bid_ask)."""
         return "option_ticks_bid_ask"
 
+    def _get_primary_key_columns(self) -> list[str]:
+        """
+        Primary key for option ticks.
+
+        Returns:
+            List of columns forming the primary key for deduplication
+        """
+        return ["underlying", "expiry", "strike", "right", "tick_time"]
+
     def get_ticks(
         self,
         underlying: str,

@@ -31,6 +31,10 @@ class OptionChainSnapshotReader(ParquetReaderBase):
         """Table name for option chain snapshots."""
         return "option_chain_snapshot"
 
+    def _get_primary_key_columns(self) -> List[str]:
+        """Primary key for option chain snapshots."""
+        return ["underlying", "as_of", "exchange", "trading_class"]
+
     def _should_use_duckdb(self, query_type: str) -> bool:
         """Always use DuckDB for option chain snapshots (small datasets)."""
         return True  # Snapshots are small, always use DuckDB
@@ -209,11 +213,12 @@ class OptionChainSnapshotReader(ParquetReaderBase):
 
         where_sql = " AND ".join(where_clauses)
 
+        # Use DISTINCT ON to deduplicate by primary key
         query = f"""
-            SELECT *
+            SELECT DISTINCT ON (underlying, as_of, exchange, trading_class) *
             FROM {table_name}
             WHERE {where_sql}
-            ORDER BY exchange, trading_class
+            ORDER BY underlying, as_of, exchange, trading_class, _dlt_load_id DESC
         """
 
         return self._query_with_duckdb(query, params)

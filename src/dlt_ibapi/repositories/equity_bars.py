@@ -26,6 +26,10 @@ class EquityBarsReader(ParquetReaderBase):
         """Table name for equity bars."""
         return "historical_bars"
 
+    def _get_primary_key_columns(self) -> List[str]:
+        """Primary key for equity bars."""
+        return ["symbol", "bar_size", "time"]
+
     def get_present_dates_for_symbol(
         self,
         symbol: str,
@@ -99,9 +103,16 @@ class EquityBarsReader(ParquetReaderBase):
                 limit=limit
             )
 
-            # Sort by time (PyArrow doesn't guarantee order)
+            # Deduplicate using primary key (symbol, bar_size, time)
+            # Keep most recent load if duplicates exist
             if not df.empty:
-                df = df.sort_values("time").reset_index(drop=True)
+                if "_dlt_load_id" in df.columns:
+                    df = df.sort_values(["time", "_dlt_load_id"], ascending=[True, False])
+                    df = df.drop_duplicates(subset=["symbol", "bar_size", "time"], keep="first")
+                else:
+                    df = df.sort_values("time")
+                    df = df.drop_duplicates(subset=["symbol", "bar_size", "time"], keep="first")
+                df = df.reset_index(drop=True)
 
             return df
         else:
@@ -128,11 +139,12 @@ class EquityBarsReader(ParquetReaderBase):
 
             where_sql = " AND ".join(where_clauses)
 
+            # Use DISTINCT ON to deduplicate by primary key
             query = f"""
-                SELECT *
+                SELECT DISTINCT ON (symbol, bar_size, time) *
                 FROM {table_name}
                 WHERE {where_sql}
-                ORDER BY time
+                ORDER BY symbol, bar_size, time, _dlt_load_id DESC
             """
 
             if limit:
@@ -244,13 +256,14 @@ class EquityBarsReader(ParquetReaderBase):
 
         where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
+        # Use COUNT(DISTINCT time) to avoid counting duplicates
         query = f"""
             SELECT
                 symbol,
                 bar_size,
                 MIN(time) as first_bar,
                 MAX(time) as last_bar,
-                COUNT(*) as bar_count
+                COUNT(DISTINCT time) as bar_count
             FROM {table_name}
             {where_clause}
             GROUP BY symbol, bar_size

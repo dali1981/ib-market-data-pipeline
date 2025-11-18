@@ -576,3 +576,213 @@ class StrategySelectResult(BaseModel):
     )
     duration_seconds: float = Field(..., ge=0, description="Duration of operation")
     error: Optional[str] = Field(default=None, description="Error message if failed")
+
+
+# Ticks Backfill Models
+
+class BackfillTicksParams(BaseModel):
+    """Parameters for tick data backfill operation.
+
+    Downloads tick data for a specific option contract during entry/exit windows
+    based on earnings announcement timing.
+
+    Two modes:
+    1. Explicit windows: Provide start_time and end_time
+    2. Earnings mode: Provide earnings_date and earnings_time (auto-calculates windows)
+    """
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(..., min_length=1, description="Underlying symbol (e.g., 'AAPL')")
+    expiry: date = Field(..., description="Option expiration date")
+    strike: float = Field(..., gt=0, description="Strike price")
+    right: Literal['C', 'P'] = Field(..., description="Option right (Call or Put)")
+
+    # Window specification (mode 1: explicit)
+    start_time: Optional[datetime] = Field(default=None, description="Start of tick window")
+    end_time: Optional[datetime] = Field(default=None, description="End of tick window")
+
+    # Earnings mode (mode 2: auto-calculate windows)
+    earnings_date: Optional[date] = Field(default=None, description="Earnings announcement date")
+    earnings_time: Optional[Literal['PRE_MARKET', 'AFTER_HOURS', 'UNKNOWN']] = Field(
+        default=None,
+        description="Earnings announcement timing"
+    )
+    window_type: Optional[Literal['entry', 'exit']] = Field(
+        default=None,
+        description="Window type for earnings mode (entry=3-4pm, exit=9-10am)"
+    )
+
+    # Pipeline configuration
+    pipeline_name: str = Field(..., min_length=1, description="DLT pipeline name")
+    dataset_name: str = Field("ticks", description="Dataset name for tick data")
+    database_path: Path = Field(default_factory=_get_default_database_path, description="Path to data directory")
+    use_delta: bool = Field(default=False, description="Use Delta Lake table format")
+    client_id: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="IB Gateway client ID (overrides config default if provided)"
+    )
+
+    @field_validator('symbol')
+    @classmethod
+    def validate_symbol(cls, v: str) -> str:
+        """Ensure symbol is uppercase."""
+        return v.upper().strip()
+
+    def model_post_init(self, __context):
+        """Validate that either explicit windows OR earnings mode is used."""
+        has_explicit = self.start_time is not None and self.end_time is not None
+        has_earnings = (
+            self.earnings_date is not None
+            and self.earnings_time is not None
+            and self.window_type is not None
+        )
+
+        if not has_explicit and not has_earnings:
+            raise ValueError(
+                'Must specify either (start_time + end_time) OR '
+                '(earnings_date + earnings_time + window_type)'
+            )
+
+        if has_explicit and has_earnings:
+            raise ValueError(
+                'Cannot specify both explicit windows and earnings mode. '
+                'Use one or the other.'
+            )
+
+        if has_explicit and self.start_time >= self.end_time:
+            raise ValueError('end_time must be after start_time')
+
+
+class BackfillTicksResult(BaseModel):
+    """Result of tick data backfill operation."""
+    success: bool = Field(..., description="Whether backfill succeeded")
+    symbol: str = Field(..., description="Underlying symbol")
+    expiry: date = Field(..., description="Option expiration date")
+    strike: float = Field(..., description="Strike price")
+    right: str = Field(..., description="Option right (C or P)")
+    start_time: datetime = Field(..., description="Start of window")
+    end_time: datetime = Field(..., description="End of window")
+    total_ticks: int = Field(default=0, ge=0, description="Total ticks fetched")
+    pipeline_name: str = Field(..., description="DLT pipeline name used")
+    output_path: Path = Field(..., description="Path where data was saved")
+    duration_seconds: float = Field(..., ge=0, description="Duration of backfill")
+    error: Optional[str] = Field(default=None, description="Error message if failed")
+
+
+# Batch Calendar Spread Tick Backfill Models
+
+class BackfillBatchCalendarTicksParams(BaseModel):
+    """Parameters for batch calendar spread tick backfill.
+
+    Downloads tick data for multiple calendar spreads based on strategy selection.
+    For each spread, downloads ticks for:
+    - Short leg: entry + exit windows
+    - Long leg: entry + exit windows
+
+    Total: 4 tick downloads per symbol (or 2 if using --entry/--exit).
+
+    Window Selection:
+    - download_entry=True, download_exit=True: Download both windows (default)
+    - download_entry=True, download_exit=False: Download only entry window
+    - download_entry=False, download_exit=True: Download only exit window
+    """
+    model_config = ConfigDict(frozen=True)
+
+    symbols: List[Dict[str, Any]] = Field(
+        ...,
+        min_length=1,
+        description="List of spreads to download. Each dict contains: symbol, strike, short_expiry, long_expiry, right"
+    )
+    earnings_date: date = Field(..., description="Earnings announcement date")
+    database_path: Path = Field(default_factory=_get_default_database_path, description="Path to data directory")
+    dataset_name: str = Field("ticks", description="Dataset name for tick data")
+    earnings_dataset_name: str = Field("earnings", description="Dataset name for earnings data")
+    pipeline_name: str = Field(..., min_length=1, description="DLT pipeline name")
+    client_id: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="IB Gateway client ID (overrides config default if provided)"
+    )
+    download_entry: bool = Field(
+        default=True,
+        description="Download entry window ticks (3-4pm day before earnings)"
+    )
+    download_exit: bool = Field(
+        default=True,
+        description="Download exit window ticks (9-10am after earnings announcement)"
+    )
+
+
+class BackfillBatchCalendarTicksResult(BaseModel):
+    """Result of batch calendar spread tick backfill."""
+    success: bool = Field(..., description="Whether all downloads succeeded")
+    earnings_date: date = Field(..., description="Earnings announcement date")
+    successful_symbols: List[str] = Field(default_factory=list, description="Symbols successfully processed")
+    failed_symbols: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Symbols that failed with error messages"
+    )
+    total_ticks: int = Field(default=0, ge=0, description="Total ticks downloaded across all symbols")
+    pipeline_name: str = Field(..., description="DLT pipeline name used")
+    output_path: Path = Field(..., description="Path where data was saved")
+    duration_seconds: float = Field(..., ge=0, description="Total duration of batch operation")
+    error: Optional[str] = Field(default=None, description="Overall error message if failed")
+
+
+# Liquidity Analysis Models
+
+class LiquidityAnalysisParams(BaseModel):
+    """Parameters for liquidity analysis operation."""
+    model_config = ConfigDict(frozen=True)
+
+    earnings_date: date = Field(..., description="Earnings date to analyze liquidity for")
+    symbols: Optional[List[str]] = Field(default=None, description="Specific symbols to analyze (optional, defaults to all)")
+    bar_size: str = Field("1 day", description="Bar size for liquidity calculation")
+    lookback_days: int = Field(20, ge=1, le=365, description="Number of days to look back for data")
+    min_days: int = Field(5, ge=1, description="Minimum days required for calculation")
+
+    # Filtering criteria
+    min_score: Optional[float] = Field(None, ge=0, le=100, description="Minimum liquidity score (0-100)")
+    min_quartile: Optional[Literal['Q1', 'Q2', 'Q3', 'Q4']] = Field(None, description="Minimum quartile")
+    min_volume: Optional[float] = Field(None, ge=0, description="Minimum average volume")
+    min_open_interest: Optional[float] = Field(None, ge=0, description="Minimum average open interest")
+    max_spread_pct: Optional[float] = Field(None, ge=0, description="Maximum spread percentage")
+
+    # Output
+    output_file: Optional[Path] = Field(None, description="Save results to CSV")
+    top_n: Optional[int] = Field(None, ge=1, description="Limit to top N most liquid")
+
+    # Data paths
+    database_path: Path = Field(default_factory=_get_default_database_path, description="Path to data directory")
+    earnings_dataset: str = Field("earnings", description="Dataset name for earnings")
+    options_dataset: str = Field("options", description="Dataset name for options")
+    option_chains_dataset: str = Field("option_chains", description="Dataset name for option chains")
+
+
+class LiquidityMetricData(BaseModel):
+    """Liquidity metric data for a single option contract."""
+    symbol: str
+    expiry: date
+    strike: float
+    right: Literal['C', 'P']
+    avg_volume: float
+    avg_open_interest: float
+    avg_spread: float
+    avg_spread_pct: float
+    volume_oi_ratio: float
+    liquidity_score: float
+    liquidity_quartile: str
+    days_observed: int
+
+
+class LiquidityAnalysisResult(BaseModel):
+    """Result of liquidity analysis operation."""
+    success: bool = Field(..., description="Whether analysis succeeded")
+    earnings_date: date = Field(..., description="Earnings date analyzed")
+    total_contracts_evaluated: int = Field(default=0, ge=0, description="Total contracts evaluated")
+    liquid_contracts_count: int = Field(default=0, ge=0, description="Contracts meeting criteria")
+    metrics: List[LiquidityMetricData] = Field(default_factory=list, description="Liquidity metrics")
+    statistics: Dict[str, float] = Field(default_factory=dict, description="Summary statistics")
+    duration_seconds: float = Field(..., ge=0, description="Duration of analysis")
+    error: Optional[str] = Field(default=None, description="Error message if failed")

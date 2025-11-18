@@ -70,7 +70,7 @@ def step1_capture_snapshot(pipeline, connection_config, underlying="AAPL"):
         max_dte=60,
     )
 
-    info = pipeline.run(data, write_disposition="replace", loader_file_format="parquet")
+    info = pipeline.run(data, loader_file_format="parquet")
 
     if info.has_failed_jobs:
         logger.error("Snapshot capture failed!")

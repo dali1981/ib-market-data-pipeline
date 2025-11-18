@@ -199,6 +199,66 @@ def execute_backfill_equity(
 - Cloud-ready (S3, GCS, Azure)
 - Standard format (no vendor lock-in)
 
+### Systematic Deduplication
+
+**As of 2025-11-17**, the project includes comprehensive deduplication infrastructure:
+
+**Reader Layer (Query-Time Deduplication):**
+- All readers (`ParquetReaderBase`, `EquityBarsReader`, `OptionBarsReader`, etc.) automatically deduplicate
+- Uses `DISTINCT ON (primary_key) ORDER BY pk, _dlt_load_id DESC` in SQL queries
+- Pandas `drop_duplicates()` for PyArrow queries
+- Default behavior: `deduplicate=True` (can be disabled with `deduplicate=False`)
+- Keeps most recent load when duplicates exist
+
+**Write Layer (Post-Load Deduplication):**
+- Maintenance module: `src/dlt_ibapi/maintenance/deduplicate.py`
+- CLI commands: `dlt-ibapi deduplicate`, `dlt-ibapi validate`
+- Analysis script: `scripts/analyze_all_duplicates.py`
+- Delta Lake support with atomic operations
+- Automatic backups, dry-run mode, partition preservation
+
+**Validation Methods:**
+```python
+reader = OptionBarsReader(database_path="./data", dataset_name="options")
+
+# Check for duplicates
+has_dupes = reader.has_duplicates(underlying="AAPL")
+
+# Get statistics
+stats = reader.get_duplicate_stats(underlying="AAPL")
+# Returns: {total_rows, unique_rows, duplicate_rows, duplicate_pct}
+
+# Get sample duplicate rows
+duplicates = reader.get_duplicates(limit=10, underlying="AAPL")
+```
+
+**CLI Usage:**
+```bash
+# Validate data quality
+dlt-ibapi validate --dataset options
+
+# Preview deduplication
+dlt-ibapi deduplicate --dataset options --dry-run
+
+# Execute deduplication (creates backup automatically)
+dlt-ibapi deduplicate --dataset options
+
+# Analyze all datasets
+uv run python scripts/analyze_all_duplicates.py
+```
+
+**Primary Keys:**
+- Equity bars: `[symbol, bar_size, time]`
+- Option bars: `[underlying, expiry, strike, right, bar_size, time]`
+- Option chains: `[underlying, as_of, exchange, trading_class]`
+- Earnings: `[symbol, earnings_date]`
+
+**Why This Matters:**
+- Prevents inflated bar counts and volume metrics
+- Ensures correct aggregations (SUM, AVG, COUNT)
+- Reliable backtest results
+- Efficient storage usage
+
 ## Development Workflow
 
 ### Installation
@@ -315,6 +375,17 @@ uv run dlt-ibapi list-earnings --days-ahead 30 --symbols AAPL MSFT
 uv run dlt-ibapi resolve-contracts AAPL MSFT GOOGL
 uv run dlt-ibapi resolve-contracts --earnings-date 2025-11-13
 uv run dlt-ibapi resolve-contracts --earnings-file earnings.json
+
+# Batch calendar spread tick backfill (NEW: 2025-11-17)
+# Separate PRE_MARKET and AFTER_HOURS earnings for optimal data availability
+uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing PRE_MARKET  # Run same day
+uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing AFTER_HOURS # Run next day
+uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --top-n 10  # Limit to top 10 opportunities
+uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17  # Process all symbols (--top-n now optional)
+
+# Progressive downloads (NEW: separate entry/exit windows)
+uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing PRE_MARKET --entry  # Entry only (Fri 3-4pm)
+uv run dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing PRE_MARKET --exit   # Exit only (Mon 9-10am)
 
 # Database statistics
 uv run dlt-ibapi stats ./data --dataset stocks
@@ -672,6 +743,14 @@ Some symbols from earnings data may not exist in IB (delisted, wrong exchange, f
    - Avoids "No security definition" errors during pipelines
    - Handles invalid symbols gracefully
    - Cache location: `.dlt-ibapi/cache/contracts/`
+
+7. **Earnings Timing Calculator Uses Market Calendar** (Fixed: 2025-11-17):
+   - `EarningsTimingCalculator` now uses `get_previous_trading_day()` and `get_next_trading_day()`
+   - NEVER use naive `timedelta(days=1)` for entry/exit dates
+   - Correctly handles weekends, holidays, and long weekends
+   - Monday PRE_MARKET earnings → Entry on Friday (not Sunday)
+   - Friday AFTER_HOURS earnings → Exit on Monday (not Saturday)
+   - See `docs/EARNINGS_TIMING_CALENDAR_FIX.md` for details
 
 ## File Locations
 

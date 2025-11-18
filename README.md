@@ -15,6 +15,7 @@ DLT connector for Interactive Brokers - ingest market data from IB Gateway/TWS i
   - [Backtesting](#backtesting)
 - [Configuration](#configuration)
 - [Dataset Organization](#dataset-organization)
+- [Data Quality & Deduplication](#data-quality--deduplication)
 - [Notebooks](#notebooks)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
@@ -41,6 +42,8 @@ Detailed documentation is available in the `docs/` directory:
 - **[Architecture](docs/ARCHITECTURE.md)** - DLT vs Dagster layer separation
 - **[CLI Architecture](docs/CLI_ARCHITECTURE.md)** - CLI refactoring and modular design
 - **[Parquet Migration](docs/PARQUET_MIGRATION.md)** - Parquet-first storage architecture
+- **[Batch Tick Backfill Improvements](docs/BATCH_TICK_BACKFILL_IMPROVEMENTS.md)** - Earnings timing filter and flexible batch processing
+- **[Earnings Timing Calendar Fix](docs/EARNINGS_TIMING_CALENDAR_FIX.md)** - Market calendar bug fix for weekend/holiday handling
 
 ## Overview
 
@@ -1033,6 +1036,100 @@ dlt-ibapi stats ./data --dataset options
 dlt-ibapi stats ./data --dataset option_chains
 dlt-ibapi stats ./data --dataset earnings
 ```
+
+## Data Quality & Deduplication
+
+`dlt-ibapi` includes **systematic deduplication** to ensure data quality across all datasets:
+
+### Automatic Query-Time Deduplication
+
+All reader methods automatically deduplicate data by primary key:
+- **Equity bars**: Deduplicates by `[symbol, bar_size, time]`
+- **Option bars**: Deduplicates by `[underlying, expiry, strike, right, bar_size, time]`
+- **Option chains**: Deduplicates by `[underlying, as_of, exchange, trading_class]`
+- **Earnings calendar**: Deduplicates by `[symbol, earnings_date]`
+
+When duplicates exist, the most recent load is kept (`_dlt_load_id DESC`).
+
+### Validate Data Quality
+
+Check for duplicates across datasets:
+
+```bash
+# Validate specific dataset
+dlt-ibapi validate --dataset options
+dlt-ibapi validate --dataset stocks
+
+# Shows duplicate statistics table:
+# - Total rows vs unique rows
+# - Duplicate count and percentage
+# - Status indicators (✓ clean, ⚠ duplicates found)
+```
+
+### Deduplicate Existing Data
+
+Remove duplicates from stored data:
+
+```bash
+# Dry-run (preview only, no changes)
+dlt-ibapi deduplicate --dataset options --dry-run
+
+# Execute deduplication (creates backup automatically)
+dlt-ibapi deduplicate --dataset options
+
+# Deduplicate specific table
+dlt-ibapi deduplicate --dataset options --table option_bars_backfill
+
+# Skip backup (faster, less safe)
+dlt-ibapi deduplicate --dataset options --no-backup
+```
+
+**Features:**
+- ✅ Atomic operations (Delta Lake transactions)
+- ✅ Automatic backups before changes
+- ✅ Preserves partition schemes
+- ✅ Detailed statistics and progress reporting
+- ✅ Dry-run mode for safety
+
+### Validation Methods (Python API)
+
+```python
+from dlt_ibapi.repositories import OptionBarsReader
+
+reader = OptionBarsReader(database_path="./data", dataset_name="options")
+
+# Check for duplicates
+if reader.has_duplicates(underlying="AAPL"):
+    print("Duplicates detected!")
+
+# Get duplicate statistics
+stats = reader.get_duplicate_stats(underlying="AAPL")
+print(f"Total: {stats['total_rows']}, Unique: {stats['unique_rows']}")
+
+# Get sample duplicate rows for inspection
+duplicates = reader.get_duplicates(limit=10, underlying="AAPL")
+print(duplicates)
+```
+
+### Why Deduplication Matters
+
+Duplicates can occur when:
+- Running the same backfill command multiple times
+- Pipeline failures with retries
+- Concurrent writes to the same dataset
+- Manual data corrections
+
+**Impact without deduplication:**
+- ❌ Inflated bar counts and volume metrics
+- ❌ Incorrect aggregations (SUM, AVG, COUNT)
+- ❌ Misleading backtest results
+- ❌ Wasted storage space
+
+**With systematic deduplication:**
+- ✅ Queries always return clean data
+- ✅ Accurate analytics and aggregations
+- ✅ Reliable backtest results
+- ✅ Efficient storage usage
 
 ### Customizing Dataset Names
 

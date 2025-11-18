@@ -241,7 +241,7 @@ def create_selected_contracts_parquet_data(
 
     @dlt.resource(
         name="selected_option_contracts",
-        write_disposition="replace",
+        write_disposition="merge",
         primary_key=["underlying", "expiry", "strike", "right", "strategy"],
         columns={
             "snapshot_date": {"partition": True},

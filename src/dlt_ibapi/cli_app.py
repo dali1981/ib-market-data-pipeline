@@ -1313,15 +1313,18 @@ def backfill_ticks(
     expiry: str = typer.Argument(..., help="Expiration date (YYYYMMDD)"),
     strike: float = typer.Argument(..., help="Strike price"),
     right: str = typer.Argument(..., help="Option right (C or P)"),
-    start: str = typer.Option(..., "--start", help="Start datetime (YYYY-MM-DD HH:MM)"),
-    end: str = typer.Option(..., "--end", help="End datetime (YYYY-MM-DD HH:MM)"),
-    tick_type: str = typer.Option("bid_ask", "--tick-type", help="Tick type: bid_ask or trades"),
-    exchange: str = typer.Option("SMART", "--exchange", help="Exchange"),
-    currency: str = typer.Option("USD", "--currency", help="Currency"),
-    use_rth: bool = typer.Option(True, "--use-rth/--no-rth", help="Use regular trading hours only"),
+    # Explicit window mode
+    start: Optional[str] = typer.Option(None, "--start", help="Start datetime (YYYY-MM-DD HH:MM)"),
+    end: Optional[str] = typer.Option(None, "--end", help="End datetime (YYYY-MM-DD HH:MM)"),
+    # Earnings mode
+    earnings_date: Optional[str] = typer.Option(None, "--earnings-date", help="Earnings date (YYYY-MM-DD) for auto-window calculation"),
+    earnings_time: Optional[str] = typer.Option(None, "--earnings-time", help="Earnings timing: PRE_MARKET, AFTER_HOURS, or UNKNOWN"),
+    window_type: Optional[str] = typer.Option(None, "--window", help="Window type: entry (3-4pm) or exit (9-10am)"),
+    # Pipeline configuration
     data_dir: str = typer.Option("./data_delta", "--data-dir", help="Data directory path"),
-    dataset: str = typer.Option("option_ticks", "--dataset", help="Dataset name"),
+    dataset: str = typer.Option("ticks", "--dataset", help="Dataset name"),
     pipeline_name: str = typer.Option("ib_tick_backfill", "--pipeline-name", help="DLT pipeline name"),
+    client_id: Optional[int] = typer.Option(None, "--client-id", help="IB Gateway client ID"),
 ):
     """
     Backfill tick-by-tick data for an option contract.
@@ -1329,50 +1332,105 @@ def backfill_ticks(
     Fetches historical tick data from Interactive Brokers for precise
     execution analysis (bid/ask spreads, trade volumes).
 
-    Example:
-        dlt-ibapi backfill-ticks TMC 20251121 5.0 C \\
-          --start "2025-11-12 15:50" \\
-          --end "2025-11-12 16:00" \\
-          --tick-type bid_ask
+    **Two modes**:
+    1. Explicit windows: Provide --start and --end
+    2. Earnings mode: Provide --earnings-date, --earnings-time, and --window
+
+    Examples:
+        # Explicit window mode
+        dlt-ibapi backfill-ticks AAPL 20251121 150.0 C \\
+          --start "2025-11-16 15:00" \\
+          --end "2025-11-16 16:00"
+
+        # Earnings mode (auto-calculates entry/exit windows)
+        dlt-ibapi backfill-ticks AAPL 20251121 150.0 C \\
+          --earnings-date 2025-11-17 \\
+          --earnings-time PRE_MARKET \\
+          --window entry
+
+        dlt-ibapi backfill-ticks AAPL 20251121 150.0 C \\
+          --earnings-date 2025-11-17 \\
+          --earnings-time PRE_MARKET \\
+          --window exit
     """
     from .cli.models import BackfillTicksParams
     from .cli.ticks import execute_backfill_ticks
 
     try:
-        # Parse dates
+        # Parse expiry
         expiry_date = datetime.strptime(expiry, '%Y%m%d').date()
-        start_dt = datetime.strptime(start, '%Y-%m-%d %H:%M')
-        end_dt = datetime.strptime(end, '%Y-%m-%d %H:%M')
-
-        # Validate tick_type
-        if tick_type not in ['bid_ask', 'trades']:
-            console.print(f"[red]Error: tick_type must be 'bid_ask' or 'trades', got '{tick_type}'[/red]")
-            raise typer.Exit(1)
 
         # Validate right
         if right.upper() not in ['C', 'P']:
             console.print(f"[red]Error: right must be 'C' or 'P', got '{right}'[/red]")
             raise typer.Exit(1)
 
-        # Create parameters
-        params = BackfillTicksParams(
-            symbol=symbol.upper(),
-            expiry=expiry_date,
-            strike=strike,
-            right=right.upper(),
-            start_datetime=start_dt,
-            end_datetime=end_dt,
-            tick_type=tick_type,
-            exchange=exchange,
-            currency=currency,
-            use_rth=use_rth,
-            database_path=Path(data_dir),
-            dataset_name=dataset,
-            pipeline_name=pipeline_name,
-        )
+        # Determine mode and validate parameters
+        has_explicit = start is not None and end is not None
+        has_earnings = earnings_date is not None and earnings_time is not None and window_type is not None
 
-        console.print(f"\n[bold]Backfilling {tick_type} ticks for {symbol} ${strike}{right.upper()} exp {expiry}[/bold]")
-        console.print(f"Time window: {start_dt} to {end_dt}\n")
+        if not has_explicit and not has_earnings:
+            console.print("[red]Error: Must specify either (--start + --end) OR (--earnings-date + --earnings-time + --window)[/red]")
+            raise typer.Exit(1)
+
+        if has_explicit and has_earnings:
+            console.print("[red]Error: Cannot specify both explicit windows and earnings mode. Use one or the other.[/red]")
+            raise typer.Exit(1)
+
+        # Create parameters based on mode
+        if has_explicit:
+            # Mode 1: Explicit windows
+            start_dt = datetime.strptime(start, '%Y-%m-%d %H:%M')
+            end_dt = datetime.strptime(end, '%Y-%m-%d %H:%M')
+
+            params = BackfillTicksParams(
+                symbol=symbol.upper(),
+                expiry=expiry_date,
+                strike=strike,
+                right=right.upper(),
+                start_time=start_dt,
+                end_time=end_dt,
+                database_path=Path(data_dir),
+                dataset_name=dataset,
+                pipeline_name=pipeline_name,
+                client_id=client_id,
+            )
+
+            console.print(f"\n[bold]Backfilling ticks for {symbol} ${strike}{right.upper()} exp {expiry}[/bold]")
+            console.print(f"[dim]Explicit window mode[/dim]")
+            console.print(f"Time window: {start_dt} to {end_dt}\n")
+
+        else:
+            # Mode 2: Earnings mode
+            earnings_dt = datetime.strptime(earnings_date, '%Y-%m-%d').date()
+
+            # Validate earnings_time
+            if earnings_time not in ['PRE_MARKET', 'AFTER_HOURS', 'UNKNOWN']:
+                console.print(f"[red]Error: earnings_time must be PRE_MARKET, AFTER_HOURS, or UNKNOWN, got '{earnings_time}'[/red]")
+                raise typer.Exit(1)
+
+            # Validate window_type
+            if window_type not in ['entry', 'exit']:
+                console.print(f"[red]Error: window must be 'entry' or 'exit', got '{window_type}'[/red]")
+                raise typer.Exit(1)
+
+            params = BackfillTicksParams(
+                symbol=symbol.upper(),
+                expiry=expiry_date,
+                strike=strike,
+                right=right.upper(),
+                earnings_date=earnings_dt,
+                earnings_time=earnings_time,
+                window_type=window_type,
+                database_path=Path(data_dir),
+                dataset_name=dataset,
+                pipeline_name=pipeline_name,
+                client_id=client_id,
+            )
+
+            console.print(f"\n[bold]Backfilling ticks for {symbol} ${strike}{right.upper()} exp {expiry}[/bold]")
+            console.print(f"[dim]Earnings mode: {earnings_time} on {earnings_dt}, {window_type} window[/dim]")
+            console.print(f"Time window will be auto-calculated based on earnings timing\n")
 
         # Execute backfill
         result = execute_backfill_ticks(params)
@@ -1380,13 +1438,273 @@ def backfill_ticks(
         # Display results
         if result.success:
             console.print(f"[green]✓ Backfill complete[/green]")
-            console.print(f"Loaded {result.ticks_loaded:,} ticks in {result.duration_seconds:.1f}s")
-            console.print(f"Time range: {result.time_range}")
-            console.print(f"Data saved to: {data_dir}/{dataset}/")
+            console.print(f"Loaded {result.total_ticks:,} ticks in {result.duration_seconds:.1f}s")
+            console.print(f"Time window: {result.start_time} to {result.end_time}")
+            console.print(f"Data saved to: {result.output_path}/")
         else:
             console.print(f"[red]✗ Backfill failed: {result.error}[/red]")
             raise typer.Exit(1)
 
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Unexpected error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def backfill_batch_calendar_ticks(
+    earnings_date: str = typer.Argument(..., help="Earnings date (YYYY-MM-DD) for calendar spreads"),
+    symbols: Optional[str] = typer.Option(
+        None,
+        "--symbols",
+        help='Comma-separated symbols (e.g., "ARMK,JJSF,ACM") OR JSON list of spreads (deprecated)'
+    ),
+    top_n: Optional[int] = typer.Option(None, "--top-n", help="Auto-load top N from strategy selection (omit for all symbols)"),
+    earnings_timing: Optional[str] = typer.Option(None, "--earnings-timing", help="Filter by earnings timing: PRE_MARKET or AFTER_HOURS"),
+    entry: bool = typer.Option(False, "--entry", help="Download only entry window ticks (3-4pm day before earnings)"),
+    exit_: bool = typer.Option(False, "--exit", help="Download only exit window ticks (9-10am after earnings announcement)"),
+    data_dir: str = typer.Option("./data_delta", "--data-dir", help="Data directory path"),
+    dataset: str = typer.Option("ticks", "--dataset", help="Dataset name for tick data"),
+    earnings_dataset: str = typer.Option("earnings", "--earnings-dataset", help="Earnings dataset name"),
+    pipeline_name: str = typer.Option("ib_batch_tick_backfill", "--pipeline-name", help="DLT pipeline name"),
+    client_id: Optional[int] = typer.Option(None, "--client-id", help="IB Gateway client ID"),
+):
+    """
+    Batch download tick data for multiple calendar spreads.
+
+    Automatically:
+    - Fetches earnings timing from database
+    - Calculates entry/exit windows
+    - Downloads ticks for both short and long legs
+    - Downloads ticks for both entry and exit windows (or separately with --entry/--exit)
+
+    Total: 4 tick downloads per symbol (short entry/exit, long entry/exit)
+
+    Earnings Timing Filter:
+    - PRE_MARKET: Entry day before, exit same day (data available same day)
+    - AFTER_HOURS: Entry same day, exit next day (data available next day)
+    - Use --earnings-timing to process one group at a time
+
+    Window Selection:
+    - Default: Download both entry AND exit windows (4 downloads per symbol)
+    - --entry: Download ONLY entry window (2 downloads per symbol: short + long entry)
+    - --exit: Download ONLY exit window (2 downloads per symbol: short + long exit)
+    - Use these flags to download data progressively as it becomes available
+
+    Examples:
+        # Auto-load TOP 10 from strategy selection
+        dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --top-n 10
+
+        # Load ALL pre-market earnings (no top-n limit)
+        dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing PRE_MARKET
+
+        # Load ALL after-hours earnings (run next day when data available)
+        dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing AFTER_HOURS
+
+        # Progressive download: Entry window first (available @ 4pm day before)
+        dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing PRE_MARKET --entry
+
+        # Progressive download: Exit window later (available @ 10am earnings day)
+        dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing PRE_MARKET --exit
+
+        # Load specific symbols from strategy selection
+        dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --symbols "ARMK,JJSF,ACM"
+
+        # Combine filters: top 5 pre-market earnings, entry only
+        dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --top-n 5 --earnings-timing PRE_MARKET --entry
+    """
+    from .cli.models import BackfillBatchCalendarTicksParams
+    from .cli.batch_ticks import execute_backfill_batch_calendar_ticks
+
+    try:
+        # Parse earnings date
+        earnings_dt = datetime.strptime(earnings_date, '%Y-%m-%d').date()
+
+        # Validate earnings timing option
+        if earnings_timing and earnings_timing not in ['PRE_MARKET', 'AFTER_HOURS']:
+            console.print(f"[red]Error: --earnings-timing must be PRE_MARKET or AFTER_HOURS (got: {earnings_timing})[/red]")
+            raise typer.Exit(1)
+
+        # Validate entry/exit window flags
+        if entry and exit_:
+            console.print("[red]Error: Cannot specify both --entry and --exit. Choose one or omit both for all windows.[/red]")
+            raise typer.Exit(1)
+
+        # Determine mode and load symbols
+        if symbols and top_n:
+            console.print("[red]Error: Cannot specify both --symbols and --top-n[/red]")
+            raise typer.Exit(1)
+
+        if symbols:
+            # Check if it's JSON (legacy mode) or comma-separated list (new mode)
+            if symbols.strip().startswith('['):
+                # Legacy JSON mode
+                symbols_list = json.loads(symbols)
+
+                # Convert expiry strings to dates
+                for symbol_data in symbols_list:
+                    if 'short_expiry' in symbol_data:
+                        symbol_data['short_expiry'] = datetime.strptime(symbol_data['short_expiry'], '%Y-%m-%d').date()
+                    if 'long_expiry' in symbol_data:
+                        symbol_data['long_expiry'] = datetime.strptime(symbol_data['long_expiry'], '%Y-%m-%d').date()
+
+                console.print(f"\n[bold]Batch Tick Backfill for {len(symbols_list)} spreads[/bold]")
+                console.print(f"[dim]Earnings date: {earnings_dt}[/dim]\n")
+            else:
+                # New comma-separated mode - load from strategy selection
+                from .cli.batch_ticks import load_top_n_from_strategy_selection
+
+                filter_symbols = [s.strip().upper() for s in symbols.split(',') if s.strip()]
+                console.print(f"\n[bold cyan]Loading opportunities from strategy selection...[/bold cyan]")
+                console.print(f"[dim]Symbols: {', '.join(filter_symbols)}[/dim]")
+                console.print(f"[dim]Running IV ratio ranking analysis for {earnings_dt}...[/dim]\n")
+
+                try:
+                    symbols_list = load_top_n_from_strategy_selection(
+                        earnings_date=earnings_dt,
+                        top_n=999,  # Use high number to get all matching symbols
+                        database_path=Path(data_dir),
+                        earnings_dataset_name=earnings_dataset,
+                        options_dataset_name='options',
+                        stocks_dataset_name='stocks',
+                        symbols_filter=filter_symbols,
+                    )
+
+                    console.print(f"[green]✓ Loaded {len(symbols_list)} opportunities[/green]")
+                    if len(symbols_list) > 0:
+                        console.print(f"[dim]Mean IV ratio: {sum(s['iv_ratio'] for s in symbols_list) / len(symbols_list):.3f}[/dim]\n")
+
+                    # Display summary table
+                    from rich.table import Table
+                    table = Table(title=f"Opportunities by IV Ratio")
+                    table.add_column("Rank", style="cyan")
+                    table.add_column("Symbol", style="bold")
+                    table.add_column("Strike", justify="right")
+                    table.add_column("IV Ratio", justify="right", style="green")
+                    table.add_column("Expected P&L", justify="right")
+
+                    for i, s in enumerate(symbols_list, 1):
+                        pnl_style = "green" if s['expected_pnl'] > 0 else "red" if s['expected_pnl'] < 0 else "dim"
+                        table.add_row(
+                            str(i),
+                            s['symbol'],
+                            f"${s['strike']:.2f}",
+                            f"{s['iv_ratio']:.3f}",
+                            f"[{pnl_style}]${s['expected_pnl']:.2f}[/{pnl_style}]"
+                        )
+
+                    console.print(table)
+                    console.print()
+
+                except Exception as e:
+                    console.print(f"[red]Error loading strategy selection: {e}[/red]")
+                    raise typer.Exit(1)
+
+        else:
+            # Auto-load from strategy selection (either TOP N or ALL)
+            from .cli.batch_ticks import load_top_n_from_strategy_selection
+
+            # Determine display text based on filters
+            if top_n and earnings_timing:
+                title_text = f"TOP {top_n} {earnings_timing.replace('_', '-').title()} earnings"
+            elif top_n:
+                title_text = f"TOP {top_n} opportunities"
+            elif earnings_timing:
+                title_text = f"ALL {earnings_timing.replace('_', '-').title()} earnings"
+            else:
+                title_text = "ALL opportunities"
+
+            console.print(f"\n[bold cyan]Loading {title_text} from strategy selection...[/bold cyan]")
+            console.print(f"[dim]Running IV ratio ranking analysis for {earnings_dt}...[/dim]\n")
+
+            try:
+                # Load with earnings timing filter
+                symbols_list = load_top_n_from_strategy_selection(
+                    earnings_date=earnings_dt,
+                    top_n=top_n if top_n else 999,  # Use high number if no limit specified
+                    database_path=Path(data_dir),
+                    earnings_dataset_name=earnings_dataset,
+                    options_dataset_name='options',
+                    stocks_dataset_name='stocks',
+                    symbols_filter=None,
+                    earnings_timing_filter=earnings_timing,  # Pass the filter
+                )
+
+                console.print(f"[green]✓ Loaded {len(symbols_list)} opportunities[/green]")
+                if len(symbols_list) > 0:
+                    console.print(f"[dim]Mean IV ratio: {sum(s['iv_ratio'] for s in symbols_list) / len(symbols_list):.3f}[/dim]\n")
+
+                # Display summary table
+                from rich.table import Table
+                table = Table(title=f"{title_text.upper()} by IV Ratio")
+                table.add_column("Rank", style="cyan")
+                table.add_column("Symbol", style="bold")
+                table.add_column("Strike", justify="right")
+                table.add_column("Timing", style="yellow")
+                table.add_column("IV Ratio", justify="right", style="green")
+                table.add_column("Expected P&L", justify="right")
+
+                for i, s in enumerate(symbols_list, 1):
+                    pnl_style = "green" if s['expected_pnl'] > 0 else "red" if s['expected_pnl'] < 0 else "dim"
+                    timing_short = s.get('earnings_timing', 'UNK')[:3]  # PRE, AFT, or UNK
+                    table.add_row(
+                        str(i),
+                        s['symbol'],
+                        f"${s['strike']:.2f}",
+                        timing_short,
+                        f"{s['iv_ratio']:.3f}",
+                        f"[{pnl_style}]${s['expected_pnl']:.2f}[/{pnl_style}]"
+                    )
+
+                console.print(table)
+                console.print()
+
+            except Exception as e:
+                console.print(f"[red]Error loading strategy selection: {e}[/red]")
+                raise typer.Exit(1)
+
+        # Determine which windows to download
+        download_entry = not exit_  # Download entry unless --exit is specified
+        download_exit = not entry   # Download exit unless --entry is specified
+
+        # Create parameters
+        params = BackfillBatchCalendarTicksParams(
+            symbols=symbols_list,
+            earnings_date=earnings_dt,
+            database_path=Path(data_dir),
+            dataset_name=dataset,
+            earnings_dataset_name=earnings_dataset,
+            pipeline_name=pipeline_name,
+            client_id=client_id,
+            download_entry=download_entry,
+            download_exit=download_exit,
+        )
+
+        # Execute batch backfill
+        result = execute_backfill_batch_calendar_ticks(params)
+
+        # Display results
+        if result.success:
+            console.print(f"\n[green]✓ Batch backfill complete[/green]")
+            console.print(f"Successful symbols: {len(result.successful_symbols)}")
+            console.print(f"Failed symbols: {len(result.failed_symbols)}")
+            console.print(f"Total ticks: {result.total_ticks:,}")
+            console.print(f"Duration: {result.duration_seconds:.1f}s")
+            console.print(f"Data saved to: {result.output_path}/")
+
+            if result.failed_symbols:
+                console.print("\n[yellow]Failed symbols:[/yellow]")
+                for failure in result.failed_symbols:
+                    console.print(f"  - {failure['symbol']}: {failure['error']}")
+        else:
+            console.print(f"\n[red]✗ Batch backfill failed: {result.error}[/red]")
+            raise typer.Exit(1)
+
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Error parsing --symbols JSON: {e}[/red]")
+        raise typer.Exit(1)
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
@@ -1884,7 +2202,7 @@ def load_earnings(
                 symbols=symbols,
             )
 
-            info = pipeline.run(data, write_disposition="replace", loader_file_format="parquet")
+            info = pipeline.run(data, loader_file_format="parquet")
 
         if info.has_failed_jobs:
             console.print("[red]✗[/red] Load failed!")
@@ -2251,6 +2569,264 @@ def resolve_contracts(
 
 
 @app.command()
+def deduplicate(
+    database_path: Path = typer.Option(Path("./data"), "--database-path", help="Path to data directory"),
+    dataset: str = typer.Option(..., "--dataset", help="Dataset to deduplicate (options, stocks, earnings, option_chains)"),
+    table: Optional[str] = typer.Option(None, "--table", help="Specific table name (default: all tables in dataset)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without making changes"),
+    no_backup: bool = typer.Option(False, "--no-backup", help="Skip backup before deduplication"),
+):
+    """
+    Deduplicate tables by removing duplicate rows based on primary keys.
+
+    When duplicates exist, keeps the row from the most recent DLT load.
+    Creates backups by default before making changes.
+
+    Examples:
+        # Analyze duplicates in options dataset (dry-run)
+        dlt-ibapi deduplicate --dataset options --dry-run
+
+        # Deduplicate all tables in options dataset
+        dlt-ibapi deduplicate --dataset options
+
+        # Deduplicate specific table
+        dlt-ibapi deduplicate --dataset options --table option_bars_backfill
+
+        # Deduplicate without backup (faster but less safe)
+        dlt-ibapi deduplicate --dataset options --no-backup
+    """
+    from dlt_ibapi.maintenance import deduplicate_delta_table, deduplicate_dataset
+    from rich.table import Table
+
+    # Dataset configurations: (dataset_name, [(table_name, primary_key), ...])
+    DATASET_CONFIGS = {
+        "options": [
+            ("option_bars_backfill", ["underlying", "expiry", "strike", "right", "bar_size", "time"]),
+            ("option_chain_snapshot", ["underlying", "as_of", "exchange", "trading_class"]),
+        ],
+        "stocks": [
+            ("historical_bars", ["symbol", "bar_size", "time"]),
+        ],
+        "earnings": [
+            ("earnings_calendar", ["symbol", "earnings_date"]),
+        ],
+        "option_chains": [
+            ("option_chain_snapshot", ["underlying", "as_of", "exchange", "trading_class"]),
+        ],
+    }
+
+    try:
+        if dataset not in DATASET_CONFIGS:
+            console.print(f"[red]Error: Unknown dataset '{dataset}'[/red]")
+            console.print(f"Available datasets: {', '.join(DATASET_CONFIGS.keys())}")
+            raise typer.Exit(1)
+
+        create_backup = not no_backup
+
+        # Show mode
+        mode_str = "[yellow]DRY RUN[/yellow]" if dry_run else "[green]EXECUTION[/green]"
+        console.print(f"\n{mode_str} - Deduplication for dataset: [cyan]{dataset}[/cyan]")
+        console.print(f"Database path: {database_path}\n")
+
+        if table:
+            # Deduplicate specific table
+            table_configs = DATASET_CONFIGS[dataset]
+            table_config = next((tc for tc in table_configs if tc[0] == table), None)
+
+            if not table_config:
+                console.print(f"[red]Error: Table '{table}' not found in dataset '{dataset}'[/red]")
+                console.print(f"Available tables: {', '.join([tc[0] for tc in table_configs])}")
+                raise typer.Exit(1)
+
+            table_name, primary_key = table_config
+
+            console.print(f"Analyzing table: [cyan]{table_name}[/cyan]...")
+
+            result = deduplicate_delta_table(
+                data_dir=str(database_path),
+                dataset=dataset,
+                table_name=table_name,
+                primary_key=primary_key,
+                dry_run=dry_run,
+                create_backup=create_backup,
+            )
+
+            console.print(f"\n{result}\n")
+
+            if result.duplicates_removed > 0 and not dry_run:
+                console.print("[green]✓ Deduplication completed successfully[/green]")
+            elif result.duplicates_removed > 0 and dry_run:
+                console.print("[yellow]Run without --dry-run to actually remove duplicates[/yellow]")
+            else:
+                console.print("[green]✓ No duplicates found[/green]")
+
+        else:
+            # Deduplicate all tables in dataset
+            table_configs = DATASET_CONFIGS[dataset]
+            console.print(f"Analyzing {len(table_configs)} table(s)...\n")
+
+            results = deduplicate_dataset(
+                data_dir=str(database_path),
+                dataset=dataset,
+                table_configs=table_configs,
+                dry_run=dry_run,
+                create_backup=create_backup,
+            )
+
+            # Display summary table
+            summary_table = Table(title=f"Deduplication Summary - {dataset}")
+            summary_table.add_column("Table", style="cyan")
+            summary_table.add_column("Rows Before", justify="right")
+            summary_table.add_column("Duplicates", justify="right", style="yellow")
+            summary_table.add_column("Rows After", justify="right")
+            summary_table.add_column("% Duped", justify="right")
+            summary_table.add_column("Time (s)", justify="right")
+
+            total_before = 0
+            total_after = 0
+            total_dupes = 0
+
+            for result in results:
+                summary_table.add_row(
+                    result.table_name,
+                    f"{result.rows_before:,}",
+                    f"{result.duplicates_removed:,}",
+                    f"{result.rows_after:,}",
+                    f"{result.duplicate_percentage:.2f}%",
+                    f"{result.execution_time_sec:.2f}",
+                )
+                total_before += result.rows_before
+                total_after += result.rows_after
+                total_dupes += result.duplicates_removed
+
+            # Add totals row
+            total_pct = 100.0 * total_dupes / total_before if total_before > 0 else 0.0
+            summary_table.add_section()
+            summary_table.add_row(
+                "[bold]TOTAL[/bold]",
+                f"[bold]{total_before:,}[/bold]",
+                f"[bold]{total_dupes:,}[/bold]",
+                f"[bold]{total_after:,}[/bold]",
+                f"[bold]{total_pct:.2f}%[/bold]",
+                "",
+            )
+
+            console.print(summary_table)
+
+            if total_dupes > 0 and not dry_run:
+                console.print("\n[green]✓ Deduplication completed successfully[/green]")
+            elif total_dupes > 0 and dry_run:
+                console.print("\n[yellow]Run without --dry-run to actually remove duplicates[/yellow]")
+            else:
+                console.print("\n[green]✓ No duplicates found in any tables[/green]")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def validate(
+    database_path: Path = typer.Option(Path("./data"), "--database-path", help="Path to data directory"),
+    dataset: str = typer.Option(..., "--dataset", help="Dataset to validate"),
+    check_duplicates: bool = typer.Option(True, "--check-duplicates", help="Check for duplicate rows"),
+):
+    """
+    Validate data quality in datasets.
+
+    Checks for issues like duplicates, missing data, or inconsistencies.
+
+    Examples:
+        dlt-ibapi validate --dataset options
+        dlt-ibapi validate --dataset stocks --check-duplicates
+    """
+    from dlt_ibapi.maintenance import get_duplicate_report
+    from rich.table import Table
+
+    DATASET_CONFIGS = {
+        "options": [
+            ("option_bars_backfill", ["underlying", "expiry", "strike", "right", "bar_size", "time"]),
+            ("option_chain_snapshot", ["underlying", "as_of", "exchange", "trading_class"]),
+        ],
+        "stocks": [
+            ("historical_bars", ["symbol", "bar_size", "time"]),
+        ],
+        "earnings": [
+            ("earnings_calendar", ["symbol", "earnings_date"]),
+        ],
+        "option_chains": [
+            ("option_chain_snapshot", ["underlying", "as_of", "exchange", "trading_class"]),
+        ],
+    }
+
+    try:
+        if dataset not in DATASET_CONFIGS:
+            console.print(f"[red]Error: Unknown dataset '{dataset}'[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"\n[cyan]Validating dataset: {dataset}[/cyan]")
+        console.print(f"Database path: {database_path}\n")
+
+        if check_duplicates:
+            table_configs = DATASET_CONFIGS[dataset]
+
+            validation_table = Table(title="Duplicate Analysis")
+            validation_table.add_column("Table", style="cyan")
+            validation_table.add_column("Total Rows", justify="right")
+            validation_table.add_column("Unique Rows", justify="right")
+            validation_table.add_column("Duplicates", justify="right", style="yellow")
+            validation_table.add_column("% Duped", justify="right")
+
+            has_duplicates = False
+
+            for table_name, primary_key in table_configs:
+                try:
+                    report = get_duplicate_report(
+                        data_dir=str(database_path),
+                        dataset=dataset,
+                        table_name=table_name,
+                        primary_key=primary_key,
+                    )
+
+                    style = "red" if report["duplicate_pct"] > 0 else "green"
+
+                    validation_table.add_row(
+                        table_name,
+                        f"{report['total_rows']:,}",
+                        f"{report['unique_rows']:,}",
+                        f"[{style}]{report['duplicate_rows']:,}[/{style}]",
+                        f"[{style}]{report['duplicate_pct']:.2f}%[/{style}]",
+                    )
+
+                    if report["duplicate_rows"] > 0:
+                        has_duplicates = True
+
+                except Exception as e:
+                    validation_table.add_row(
+                        table_name,
+                        "[red]ERROR[/red]",
+                        "-",
+                        "-",
+                        f"[red]{str(e)}[/red]",
+                    )
+
+            console.print(validation_table)
+
+            if has_duplicates:
+                console.print("\n[yellow]⚠ Duplicates detected. Run 'dlt-ibapi deduplicate' to clean.[/yellow]")
+            else:
+                console.print("\n[green]✓ No duplicates found[/green]")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def version():
     """Show dlt-ibapi version."""
     from . import __version__
@@ -2579,6 +3155,178 @@ def strategy_select(
         console.print(f"\n[bold]Results:[/bold]")
         console.print(f"  Total evaluated: {result.total_evaluated}")
         console.print(f"  Selected: {result.selected_count}")
+        console.print(f"  Duration: {result.duration_seconds:.1f}s")
+
+        if output:
+            console.print(f"\n[green]✓ Results saved to: {output}[/green]")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"\n[red bold]✗ Error:[/red bold] {str(e)}")
+        import traceback
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise typer.Exit(1)
+
+
+@strategy_app.command(name="liquidity")
+def strategy_liquidity(
+    earnings_date: str = typer.Option(..., "--earnings-date", help="Earnings date (YYYY-MM-DD)"),
+    symbols: Optional[List[str]] = typer.Option(
+        None,
+        "--symbols",
+        "-s",
+        help="Filter by specific symbols (comma-separated or multiple -s flags)",
+    ),
+    bar_size: str = typer.Option("1 day", "--bar-size", help="Bar size for liquidity calculation"),
+    lookback_days: int = typer.Option(20, "--lookback-days", help="Days to look back for data (1-365)"),
+    min_days: int = typer.Option(5, "--min-days", help="Minimum days required for calculation"),
+    min_score: Optional[float] = typer.Option(None, "--min-score", help="Minimum liquidity score (0-100)"),
+    min_quartile: Optional[str] = typer.Option(None, "--min-quartile", help="Minimum quartile (Q1, Q2, Q3, Q4)"),
+    min_volume: Optional[float] = typer.Option(None, "--min-volume", help="Minimum average volume"),
+    min_oi: Optional[float] = typer.Option(None, "--min-oi", help="Minimum average open interest"),
+    max_spread: Optional[float] = typer.Option(None, "--max-spread", help="Maximum spread percentage"),
+    top_n: Optional[int] = typer.Option(None, "--top-n", "-n", help="Limit to top N most liquid"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Save results to CSV file"),
+    dataset_earnings: str = typer.Option("earnings", "--dataset-earnings", help="Earnings dataset name"),
+    dataset_options: str = typer.Option("options", "--dataset-options", help="Options dataset name"),
+    dataset_chains: str = typer.Option("option_chains", "--dataset-chains", help="Option chains dataset name"),
+):
+    """
+    Analyze liquidity metrics for option contracts around earnings dates.
+
+    Calculates liquidity scores based on volume, open interest, bid/ask spreads,
+    and volume/OI ratios. Higher scores indicate more liquid contracts with tighter
+    spreads and better tradability.
+
+    Example:
+        dlt-ibapi strategy liquidity --earnings-date 2025-11-13
+        dlt-ibapi strategy liquidity --earnings-date 2025-11-13 --min-score 70 --top-n 10
+        dlt-ibapi strategy liquidity --earnings-date 2025-11-13 --min-quartile Q4 --output liquid.csv
+    """
+    from datetime import datetime
+    from dlt_ibapi.cli.liquidity import execute_liquidity_analysis
+    from dlt_ibapi.cli.models import LiquidityAnalysisParams
+    from delta_lake_storage import get_config as get_storage_config
+    from rich.table import Table
+
+    try:
+        # Parse earnings date
+        try:
+            parsed_date = datetime.strptime(earnings_date, "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error: Invalid date format '{earnings_date}'. Use YYYY-MM-DD.[/red]")
+            raise typer.Exit(1)
+
+        # Parse symbols parameter (handle comma-separated and multiple flags)
+        query_symbols = None
+        if symbols:
+            query_symbols = []
+            for s in symbols:
+                if ',' in s:
+                    query_symbols.extend([x.strip().upper() for x in s.split(',')])
+                else:
+                    query_symbols.append(s.upper())
+
+        # Validate min_quartile
+        if min_quartile and min_quartile not in ['Q1', 'Q2', 'Q3', 'Q4']:
+            console.print("[red]Error: min-quartile must be Q1, Q2, Q3, or Q4[/red]")
+            raise typer.Exit(1)
+
+        # Get database path from storage config
+        storage_cfg = get_storage_config()
+        database_path = Path(storage_cfg.storage.base_path)
+
+        # Create parameters model
+        params = LiquidityAnalysisParams(
+            earnings_date=parsed_date,
+            symbols=query_symbols,
+            bar_size=bar_size,
+            lookback_days=lookback_days,
+            min_days=min_days,
+            min_score=min_score,
+            min_quartile=min_quartile,
+            min_volume=min_volume,
+            min_open_interest=min_oi,
+            max_spread_pct=max_spread,
+            output_file=output,
+            top_n=top_n,
+            database_path=database_path,
+            earnings_dataset=dataset_earnings,
+            options_dataset=dataset_options,
+            option_chains_dataset=dataset_chains,
+        )
+
+        # Execute liquidity analysis
+        console.print(f"\n[bold cyan]Analyzing Liquidity for {earnings_date}[/bold cyan]\n")
+
+        result = execute_liquidity_analysis(params)
+
+        if not result.success:
+            console.print(f"\n[red bold]✗ Analysis failed:[/red bold] {result.error}")
+            raise typer.Exit(1)
+
+        # Display results
+        if not result.metrics:
+            console.print("\n[yellow]No liquid contracts found matching criteria[/yellow]")
+            console.print(f"Total contracts evaluated: {result.total_contracts_evaluated}")
+            raise typer.Exit(0)
+
+        # Create results table
+        table = Table(title=f"Liquidity Analysis - {earnings_date}", show_header=True)
+        table.add_column("Rank", justify="right", style="cyan")
+        table.add_column("Symbol", style="bold")
+        table.add_column("Strike", justify="right")
+        table.add_column("Right", justify="center")
+        table.add_column("Expiry", style="dim")
+        table.add_column("Score", justify="right", style="green")
+        table.add_column("Quartile", justify="center")
+        table.add_column("Avg Vol", justify="right", style="blue")
+        table.add_column("Avg OI", justify="right", style="blue")
+        table.add_column("Spread %", justify="right", style="yellow")
+        table.add_column("Vol/OI", justify="right", style="magenta")
+        table.add_column("Days", justify="right", style="dim")
+
+        for rank, metric in enumerate(result.metrics, 1):
+            # Color quartile
+            quartile_color = {
+                'Q4': '[green]Q4[/green]',
+                'Q3': '[cyan]Q3[/cyan]',
+                'Q2': '[yellow]Q2[/yellow]',
+                'Q1': '[red]Q1[/red]',
+            }.get(metric.liquidity_quartile, metric.liquidity_quartile)
+
+            table.add_row(
+                str(rank),
+                metric.symbol,
+                f"{metric.strike:.2f}",
+                metric.right,
+                metric.expiry.strftime('%Y-%m-%d'),
+                f"{metric.liquidity_score:.1f}",
+                quartile_color,
+                f"{metric.avg_volume:.0f}",
+                f"{metric.avg_open_interest:.0f}",
+                f"{metric.avg_spread_pct:.2f}%",
+                f"{metric.volume_oi_ratio:.2f}",
+                str(metric.days_observed),
+            )
+
+        console.print(table)
+
+        # Display statistics
+        if result.statistics:
+            console.print("\n[bold]Liquidity Statistics:[/bold]")
+            console.print(f"  Mean Score: {result.statistics.get('mean_score', 0):.1f}")
+            console.print(f"  Median Score: {result.statistics.get('median_score', 0):.1f}")
+            console.print(f"  Score Range: {result.statistics.get('min_score', 0):.1f} - {result.statistics.get('max_score', 0):.1f}")
+            console.print(f"  Mean Volume: {result.statistics.get('mean_volume', 0):.0f}")
+            console.print(f"  Mean Open Interest: {result.statistics.get('mean_open_interest', 0):.0f}")
+            console.print(f"  Mean Spread: {result.statistics.get('mean_spread_pct', 0):.2f}%")
+
+        # Summary
+        console.print(f"\n[bold]Results:[/bold]")
+        console.print(f"  Total contracts evaluated: {result.total_contracts_evaluated}")
+        console.print(f"  Liquid contracts found: {result.liquid_contracts_count}")
         console.print(f"  Duration: {result.duration_seconds:.1f}s")
 
         if output:

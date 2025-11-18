@@ -812,7 +812,7 @@ def equity_bars_backfill_source(
 
 @dlt.resource(
     name="contract_descriptions",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key=["symbol", "conid"],
 )
 def resolve_contracts_resource(
@@ -826,7 +826,7 @@ def resolve_contracts_resource(
     Uses ContractResolver to resolve symbols and stores both contract
     descriptions (from MatchingSymbol) and details (from ContractDetails).
 
-    Write disposition: replace (full refresh for each run)
+    Write disposition: merge (deduplication on primary key)
     Primary key: [symbol, conid]
 
     Args:
@@ -890,7 +890,7 @@ def resolve_contracts_resource(
 
 @dlt.resource(
     name="selected_option_contracts",
-    write_disposition="replace",
+    write_disposition="merge",
     primary_key=["underlying", "expiry", "strike", "right", "strategy"],
     columns={
         "snapshot_date": {"partition": True},

@@ -122,6 +122,23 @@ class ParquetReaderBase(ABC):
         """Get the name of the table to query (e.g., 'equity_bars')."""
         pass
 
+    @abstractmethod
+    def _get_primary_key_columns(self) -> List[str]:
+        """
+        Get the primary key columns for this table.
+
+        Used for deduplication via DISTINCT ON.
+        Subclasses must define their primary key.
+
+        Returns:
+            List of column names forming the primary key
+
+        Example:
+            For equity bars: ["symbol", "bar_size", "time"]
+            For option bars: ["underlying", "expiry", "strike", "right", "bar_size", "time"]
+        """
+        pass
+
     def _get_table_path(self) -> Path:
         """Get the full path to the table's Parquet files."""
         table_name = self._get_table_name()
@@ -388,19 +405,24 @@ class ParquetReaderBase(ABC):
         columns: Optional[List[str]] = None,
         limit: Optional[int] = None,
         use_pyarrow: bool = False,
+        deduplicate: bool = True,
         **filters
     ) -> pd.DataFrame:
         """
         Load data from table with optional filtering.
 
+        Data is automatically deduplicated using the table's primary key.
+        When duplicates exist, keeps the row from the most recent load (_dlt_load_id DESC).
+
         Args:
             columns: Columns to select (None = all)
             limit: Maximum rows to return
             use_pyarrow: Force use of PyArrow (default: auto-detect)
+            deduplicate: If True, deduplicate using DISTINCT ON primary key (default: True)
             **filters: Column filters (e.g., symbol="AAPL")
 
         Returns:
-            Query results as DataFrame
+            Query results as DataFrame (deduplicated by default)
         """
         table_name = self._get_table_name()
 
@@ -414,14 +436,38 @@ class ParquetReaderBase(ABC):
                     expr = pc.field(key) == value
                     filter_expr = expr if filter_expr is None else filter_expr & expr
 
-            return self._query_with_pyarrow(columns, filter_expr, limit)
+            df = self._query_with_pyarrow(columns, filter_expr, limit)
+
+            # Deduplicate in pandas if needed
+            if deduplicate:
+                pk_columns = self._get_primary_key_columns()
+                # Keep last occurrence (most recent _dlt_load_id if present)
+                if "_dlt_load_id" in df.columns:
+                    df = df.sort_values("_dlt_load_id", ascending=False)
+                df = df.drop_duplicates(subset=pk_columns, keep="first")
+
+            return df
         else:
-            # Use DuckDB
+            # Use DuckDB with DISTINCT ON for deduplication
             # Build SELECT clause
-            if columns:
-                select_clause = ", ".join(columns)
+            if deduplicate:
+                pk_columns = self._get_primary_key_columns()
+                # Quote column names that are SQL reserved keywords
+                quoted_pk = [
+                    f'"{col}"' if col.lower() in ('right', 'left', 'order', 'group') else col
+                    for col in pk_columns
+                ]
+                pk_clause = ", ".join(quoted_pk)
+
+                if columns:
+                    select_clause = f"DISTINCT ON ({pk_clause}) {', '.join(columns)}"
+                else:
+                    select_clause = f"DISTINCT ON ({pk_clause}) *"
             else:
-                select_clause = "*"
+                if columns:
+                    select_clause = ", ".join(columns)
+                else:
+                    select_clause = "*"
 
             # Build WHERE clause
             where_clauses = []
@@ -439,21 +485,34 @@ class ParquetReaderBase(ABC):
             if where_clauses:
                 query += " WHERE " + " AND ".join(where_clauses)
 
+            # Add ORDER BY for DISTINCT ON (primary key + _dlt_load_id DESC)
+            if deduplicate:
+                pk_columns = self._get_primary_key_columns()
+                quoted_pk = [
+                    f'"{col}"' if col.lower() in ('right', 'left', 'order', 'group') else col
+                    for col in pk_columns
+                ]
+                order_by_clause = ", ".join(quoted_pk) + ", _dlt_load_id DESC"
+                query += f" ORDER BY {order_by_clause}"
+
             if limit:
                 query += f" LIMIT {limit}"
 
             return self._query_with_duckdb(query, params)
 
-    def count(self, **filters) -> int:
+    def count(self, deduplicate: bool = True, **filters) -> int:
         """
         Count rows matching filters.
+
+        By default counts unique rows based on primary key.
         Uses DuckDB for efficient aggregation.
 
         Args:
+            deduplicate: If True, count unique rows only (default: True)
             **filters: Column filters
 
         Returns:
-            Row count
+            Row count (unique rows if deduplicate=True)
         """
         table_name = self._get_table_name()
 
@@ -469,10 +528,177 @@ class ParquetReaderBase(ABC):
                 where_clauses.append(f"{column} = ${param_name}")
                 params[param_name] = value
 
-        query = f"SELECT COUNT(*) as count FROM {table_name}"
+        if deduplicate:
+            # Count unique rows using DISTINCT on primary key
+            pk_columns = self._get_primary_key_columns()
+            quoted_pk = [
+                f'"{col}"' if col.lower() in ('right', 'left', 'order', 'group') else col
+                for col in pk_columns
+            ]
+            pk_list = ", ".join(quoted_pk)
+            query = f"SELECT COUNT(DISTINCT ({pk_list})) as count FROM {table_name}"
+        else:
+            # Count all rows including duplicates
+            query = f"SELECT COUNT(*) as count FROM {table_name}"
 
         if where_clauses:
             query += " WHERE " + " AND ".join(where_clauses)
 
         df = self._query_with_duckdb(query, params)
         return int(df.iloc[0]["count"]) if not df.empty else 0
+
+    def has_duplicates(self, **filters) -> bool:
+        """
+        Check if table contains duplicate rows based on primary key.
+
+        Args:
+            **filters: Column filters to narrow search
+
+        Returns:
+            True if duplicates exist, False otherwise
+        """
+        table_name = self._get_table_name()
+        pk_columns = self._get_primary_key_columns()
+
+        # Quote column names that are SQL reserved keywords
+        quoted_pk = [
+            f'"{col}"' if col.lower() in ('right', 'left', 'order', 'group') else col
+            for col in pk_columns
+        ]
+        pk_list = ", ".join(quoted_pk)
+
+        # Build WHERE clause
+        where_clauses = []
+        params = {}
+
+        for key, value in filters.items():
+            if value is not None:
+                param_name = f"filter_{key}"
+                column = f'"{key}"' if key.lower() in ('right', 'left', 'order', 'group') else key
+                where_clauses.append(f"{column} = ${param_name}")
+                params[param_name] = value
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        # Compare total rows vs unique primary key combinations
+        query = f"""
+            SELECT
+                COUNT(*) as total_rows,
+                COUNT(DISTINCT ({pk_list})) as unique_rows
+            FROM {table_name}
+            {where_sql}
+        """
+
+        df = self._query_with_duckdb(query, params)
+        if df.empty:
+            return False
+
+        total = int(df.iloc[0]["total_rows"])
+        unique = int(df.iloc[0]["unique_rows"])
+        return total > unique
+
+    def get_duplicate_stats(self, **filters) -> pd.DataFrame:
+        """
+        Get statistics about duplicates in the table.
+
+        Returns summary showing:
+        - Total rows
+        - Unique rows (by primary key)
+        - Duplicate rows
+        - Duplicate percentage
+
+        Args:
+            **filters: Column filters to narrow analysis
+
+        Returns:
+            DataFrame with duplicate statistics
+        """
+        table_name = self._get_table_name()
+        pk_columns = self._get_primary_key_columns()
+
+        # Quote column names
+        quoted_pk = [
+            f'"{col}"' if col.lower() in ('right', 'left', 'order', 'group') else col
+            for col in pk_columns
+        ]
+        pk_list = ", ".join(quoted_pk)
+
+        # Build WHERE clause
+        where_clauses = []
+        params = {}
+
+        for key, value in filters.items():
+            if value is not None:
+                param_name = f"filter_{key}"
+                column = f'"{key}"' if key.lower() in ('right', 'left', 'order', 'group') else key
+                where_clauses.append(f"{column} = ${param_name}")
+                params[param_name] = value
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        query = f"""
+            SELECT
+                COUNT(*) as total_rows,
+                COUNT(DISTINCT ({pk_list})) as unique_rows,
+                COUNT(*) - COUNT(DISTINCT ({pk_list})) as duplicate_rows,
+                ROUND(100.0 * (COUNT(*) - COUNT(DISTINCT ({pk_list}))) / COUNT(*), 2) as duplicate_pct
+            FROM {table_name}
+            {where_sql}
+        """
+
+        return self._query_with_duckdb(query, params)
+
+    def get_duplicates(self, limit: int = 100, **filters) -> pd.DataFrame:
+        """
+        Get actual duplicate rows for inspection.
+
+        Returns rows where the primary key appears more than once,
+        ordered by primary key and load ID (most recent first).
+
+        Args:
+            limit: Maximum number of duplicate groups to return (default: 100)
+            **filters: Column filters to narrow search
+
+        Returns:
+            DataFrame containing duplicate rows with duplicate count
+        """
+        table_name = self._get_table_name()
+        pk_columns = self._get_primary_key_columns()
+
+        # Quote column names
+        quoted_pk = [
+            f'"{col}"' if col.lower() in ('right', 'left', 'order', 'group') else col
+            for col in pk_columns
+        ]
+        pk_list = ", ".join(quoted_pk)
+
+        # Build WHERE clause
+        where_clauses = []
+        params = {}
+
+        for key, value in filters.items():
+            if value is not None:
+                param_name = f"filter_{key}"
+                column = f'"{key}"' if key.lower() in ('right', 'left', 'order', 'group') else key
+                where_clauses.append(f"{column} = ${param_name}")
+                params[param_name] = value
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        # Find primary keys with duplicates and return all rows for those keys
+        query = f"""
+            WITH duplicate_keys AS (
+                SELECT {pk_list}
+                FROM {table_name}
+                {where_sql}
+                GROUP BY {pk_list}
+                HAVING COUNT(*) > 1
+                LIMIT {limit}
+            )
+            SELECT t.*, COUNT(*) OVER (PARTITION BY {', '.join(['t.' + col for col in quoted_pk])}) as dup_count
+            FROM {table_name} t
+            INNER JOIN duplicate_keys d ON {' AND '.join([f't.{col} = d.{col}' for col in quoted_pk])}
+            ORDER BY {pk_list}, t._dlt_load_id DESC
+        """
+
+        return self._query_with_duckdb(query, params)

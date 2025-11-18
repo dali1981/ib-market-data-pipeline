@@ -60,7 +60,7 @@ def _format_ib_datetime(dt: datetime, timezone_str: str) -> str:
     primary_key=["underlying", "expiry", "strike", "right", "tick_time"],
     columns={
         "date": {"partition": True},
-        "symbol": {"partition": True},
+        "underlying": {"partition": True},
     }
 )
 def backfill_option_ticks_bid_ask(
@@ -224,17 +224,24 @@ def backfill_option_ticks_bid_ask(
                 )
                 total_ticks += 1
 
+            # Stop if we received fewer ticks than requested (no more data available)
+            if len(ticks) < 1000:
+                logger.info(f"Received {len(ticks)} < 1000 ticks, no more data available")
+                break
+
             # Update start time for next request
             if ticks:
                 last_tick = ticks[-1]
                 last_tick_dt = datetime.fromtimestamp(last_tick.time, tz=tz)
 
-                # Check if we've reached the end time
-                if last_tick_dt >= end_datetime:
-                    logger.info(f"Reached end time: {last_tick_dt}")
-                    break
+                # Move 1 second past the last tick to avoid infinite loop
+                # (IB API startDateTime is inclusive, so we need to advance past the last tick)
+                current_start = last_tick_dt + timedelta(seconds=1)
 
-                current_start = last_tick_dt
+                # Check if next request would be beyond end time
+                if current_start >= end_datetime:
+                    logger.info(f"Next request would exceed end time: {current_start} >= {end_datetime}")
+                    break
             else:
                 # No ticks received
                 logger.info("No more ticks available")
@@ -392,17 +399,24 @@ def backfill_option_ticks_trades(
                 )
                 total_ticks += 1
 
+            # Stop if we received fewer ticks than requested (no more data available)
+            if len(ticks) < 1000:
+                logger.info(f"Received {len(ticks)} < 1000 ticks, no more data available")
+                break
+
             # Update start time for next request
             if ticks:
                 last_tick = ticks[-1]
                 last_tick_dt = datetime.fromtimestamp(last_tick.time, tz=tz)
 
-                # Check if we've reached the end time
-                if last_tick_dt >= end_datetime:
-                    logger.info(f"Reached end time: {last_tick_dt}")
-                    break
+                # Move 1 second past the last tick to avoid infinite loop
+                # (IB API startDateTime is inclusive, so we need to advance past the last tick)
+                current_start = last_tick_dt + timedelta(seconds=1)
 
-                current_start = last_tick_dt
+                # Check if next request would be beyond end time
+                if current_start >= end_datetime:
+                    logger.info(f"Next request would exceed end time: {current_start} >= {end_datetime}")
+                    break
             else:
                 # No ticks received
                 logger.info("No more ticks available")

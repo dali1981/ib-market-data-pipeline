@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 @dlt.resource(
     name="earnings_calendar",
-    write_disposition="replace",  # Daily snapshots
+    write_disposition="merge",  # Merge with deduplication
     primary_key="symbol",
 )
 def earnings_calendar_resource(

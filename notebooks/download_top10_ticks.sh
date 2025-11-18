@@ -5,62 +5,62 @@
 set -e  # Exit on error
 
 
-# 1. DIS - Earnings 2025-11-13 (PRE_MARKET)
-echo 'Downloading DIS entry ticks...'
-dlt-ibapi backfill-ticks DIS 20251114 110.0 C --start "2025-11-12 15:00" --end "2025-11-12 16:00"
-echo 'Downloading DIS exit ticks...'
-dlt-ibapi backfill-ticks DIS 20251114 110.0 C --start "2025-11-13 09:00" --end "2025-11-13 10:00"
+# 1. ARMK - Earnings 2025-11-17 (PRE_MARKET)
+echo 'Downloading ARMK entry ticks...'
+dlt-ibapi backfill-ticks ARMK 20251121 38.0 C --start "2025-11-16 15:00" --end "2025-11-16 16:00"
+echo 'Downloading ARMK exit ticks...'
+dlt-ibapi backfill-ticks ARMK 20251121 38.0 C --start "2025-11-17 09:00" --end "2025-11-17 10:00"
 
-# 2. BTM - Earnings 2025-11-13 (PRE_MARKET)
-echo 'Downloading BTM entry ticks...'
-dlt-ibapi backfill-ticks BTM 20251121 2.0 C --start "2025-11-12 15:00" --end "2025-11-12 16:00"
-echo 'Downloading BTM exit ticks...'
-dlt-ibapi backfill-ticks BTM 20251121 2.0 C --start "2025-11-13 09:00" --end "2025-11-13 10:00"
+# 2. SOHU - Earnings 2025-11-17 (PRE_MARKET)
+echo 'Downloading SOHU entry ticks...'
+dlt-ibapi backfill-ticks SOHU 20251121 15.0 C --start "2025-11-16 15:00" --end "2025-11-16 16:00"
+echo 'Downloading SOHU exit ticks...'
+dlt-ibapi backfill-ticks SOHU 20251121 15.0 C --start "2025-11-17 09:00" --end "2025-11-17 10:00"
 
-# 3. BN - Earnings 2025-11-13 (PRE_MARKET)
-echo 'Downloading BN entry ticks...'
-dlt-ibapi backfill-ticks BN 20251121 45.0 C --start "2025-11-12 15:00" --end "2025-11-12 16:00"
-echo 'Downloading BN exit ticks...'
-dlt-ibapi backfill-ticks BN 20251121 45.0 C --start "2025-11-13 09:00" --end "2025-11-13 10:00"
+# 3. LFMD - Earnings 2025-11-17 (AFTER_HOURS)
+echo 'Downloading LFMD entry ticks...'
+dlt-ibapi backfill-ticks LFMD 20251121 5.0 C --start "2025-11-17 15:00" --end "2025-11-17 16:00"
+echo 'Downloading LFMD exit ticks...'
+dlt-ibapi backfill-ticks LFMD 20251121 5.0 C --start "2025-11-18 09:00" --end "2025-11-18 10:00"
 
-# 4. AMAT - Earnings 2025-11-13 (AFTER_HOURS)
-echo 'Downloading AMAT entry ticks...'
-dlt-ibapi backfill-ticks AMAT 20251114 225.0 C --start "2025-11-13 15:00" --end "2025-11-13 16:00"
-echo 'Downloading AMAT exit ticks...'
-dlt-ibapi backfill-ticks AMAT 20251114 225.0 C --start "2025-11-14 09:00" --end "2025-11-14 10:00"
+# 4. YSG - Earnings 2025-11-17 (PRE_MARKET)
+echo 'Downloading YSG entry ticks...'
+dlt-ibapi backfill-ticks YSG 20251121 7.5 C --start "2025-11-16 15:00" --end "2025-11-16 16:00"
+echo 'Downloading YSG exit ticks...'
+dlt-ibapi backfill-ticks YSG 20251121 7.5 C --start "2025-11-17 09:00" --end "2025-11-17 10:00"
 
-# 5. CEPO - Earnings 2025-11-13 (UNKNOWN)
-echo 'Downloading CEPO entry ticks...'
-dlt-ibapi backfill-ticks CEPO 20251121 10.0 C --start "2025-11-13 15:00" --end "2025-11-13 16:00"
-echo 'Downloading CEPO exit ticks...'
-dlt-ibapi backfill-ticks CEPO 20251121 10.0 C --start "2025-11-14 09:00" --end "2025-11-14 10:00"
+# 5. JJSF - Earnings 2025-11-17 (PRE_MARKET)
+echo 'Downloading JJSF entry ticks...'
+dlt-ibapi backfill-ticks JJSF 20251121 85.0 C --start "2025-11-16 15:00" --end "2025-11-16 16:00"
+echo 'Downloading JJSF exit ticks...'
+dlt-ibapi backfill-ticks JJSF 20251121 85.0 C --start "2025-11-17 09:00" --end "2025-11-17 10:00"
 
-# 6. BAP - Earnings 2025-11-13 (AFTER_HOURS)
-echo 'Downloading BAP entry ticks...'
-dlt-ibapi backfill-ticks BAP 20251121 250.0 C --start "2025-11-13 15:00" --end "2025-11-13 16:00"
-echo 'Downloading BAP exit ticks...'
-dlt-ibapi backfill-ticks BAP 20251121 250.0 C --start "2025-11-14 09:00" --end "2025-11-14 10:00"
+# 6. ACM - Earnings 2025-11-17 (AFTER_HOURS)
+echo 'Downloading ACM entry ticks...'
+dlt-ibapi backfill-ticks ACM 20251121 135.0 C --start "2025-11-17 15:00" --end "2025-11-17 16:00"
+echo 'Downloading ACM exit ticks...'
+dlt-ibapi backfill-ticks ACM 20251121 135.0 C --start "2025-11-18 09:00" --end "2025-11-18 10:00"
 
-# 7. CYBN - Earnings 2025-11-13 (PRE_MARKET)
-echo 'Downloading CYBN entry ticks...'
-dlt-ibapi backfill-ticks CYBN 20251121 5.0 C --start "2025-11-12 15:00" --end "2025-11-12 16:00"
-echo 'Downloading CYBN exit ticks...'
-dlt-ibapi backfill-ticks CYBN 20251121 5.0 C --start "2025-11-13 09:00" --end "2025-11-13 10:00"
+# 7. NIU - Earnings 2025-11-17 (PRE_MARKET)
+echo 'Downloading NIU entry ticks...'
+dlt-ibapi backfill-ticks NIU 20251121 5.0 C --start "2025-11-16 15:00" --end "2025-11-16 16:00"
+echo 'Downloading NIU exit ticks...'
+dlt-ibapi backfill-ticks NIU 20251121 5.0 C --start "2025-11-17 09:00" --end "2025-11-17 10:00"
 
-# 8. BITF - Earnings 2025-11-13 (PRE_MARKET)
-echo 'Downloading BITF entry ticks...'
-dlt-ibapi backfill-ticks BITF 20251114 3.0 C --start "2025-11-12 15:00" --end "2025-11-12 16:00"
-echo 'Downloading BITF exit ticks...'
-dlt-ibapi backfill-ticks BITF 20251114 3.0 C --start "2025-11-13 09:00" --end "2025-11-13 10:00"
+# 8. NKLR - Earnings 2025-11-17 (PRE_MARKET)
+echo 'Downloading NKLR entry ticks...'
+dlt-ibapi backfill-ticks NKLR 20251121 5.0 C --start "2025-11-16 15:00" --end "2025-11-16 16:00"
+echo 'Downloading NKLR exit ticks...'
+dlt-ibapi backfill-ticks NKLR 20251121 5.0 C --start "2025-11-17 09:00" --end "2025-11-17 10:00"
 
-# 9. BZH - Earnings 2025-11-13 (AFTER_HOURS)
-echo 'Downloading BZH entry ticks...'
-dlt-ibapi backfill-ticks BZH 20251121 22.0 C --start "2025-11-13 15:00" --end "2025-11-13 16:00"
-echo 'Downloading BZH exit ticks...'
-dlt-ibapi backfill-ticks BZH 20251121 22.0 C --start "2025-11-14 09:00" --end "2025-11-14 10:00"
+# 9. HP - Earnings 2025-11-17 (AFTER_HOURS)
+echo 'Downloading HP entry ticks...'
+dlt-ibapi backfill-ticks HP 20251121 27.5 C --start "2025-11-17 15:00" --end "2025-11-17 16:00"
+echo 'Downloading HP exit ticks...'
+dlt-ibapi backfill-ticks HP 20251121 27.5 C --start "2025-11-18 09:00" --end "2025-11-18 10:00"
 
-# 10. CSIQ - Earnings 2025-11-13 (PRE_MARKET)
-echo 'Downloading CSIQ entry ticks...'
-dlt-ibapi backfill-ticks CSIQ 20251114 29.0 C --start "2025-11-12 15:00" --end "2025-11-12 16:00"
-echo 'Downloading CSIQ exit ticks...'
-dlt-ibapi backfill-ticks CSIQ 20251114 29.0 C --start "2025-11-13 09:00" --end "2025-11-13 10:00"
+# 10. IMTX - Earnings 2025-11-17 (UNKNOWN)
+echo 'Downloading IMTX entry ticks...'
+dlt-ibapi backfill-ticks IMTX 20251121 10.0 C --start "2025-11-17 15:00" --end "2025-11-17 16:00"
+echo 'Downloading IMTX exit ticks...'
+dlt-ibapi backfill-ticks IMTX 20251121 10.0 C --start "2025-11-18 09:00" --end "2025-11-18 10:00"

@@ -16,7 +16,7 @@ Example:
     >>>
     >>> # Load from JSON file
     >>> data = load_earnings_from_json("/path/to/earnings.json")
-    >>> info = pipeline.run(data, write_disposition="replace", loader_file_format="parquet")
+    >>> info = pipeline.run(data, loader_file_format="parquet")
 """
 
 from typing import Iterator, Optional, List
@@ -30,7 +30,7 @@ from dlt_ibapi.backtest.earnings_loader import EarningsCalendarLoader, EarningsE
 
 @dlt.resource(
     name="earnings_calendar",
-    write_disposition="replace",  # Replace on each load (snapshot)
+    write_disposition="merge",  # Merge with deduplication on primary key
     primary_key=["symbol", "earnings_date"],
     columns={
         "symbol": {"data_type": "text"},
@@ -76,8 +76,8 @@ def load_earnings_from_json(
     Note:
         - JSON file format: Array of earnings objects from Nasdaq
         - See earnings_loader.py for expected JSON schema
-        - write_disposition="replace" means each load replaces previous data
-        - Use multiple files for historical snapshots by running pipeline multiple times
+        - write_disposition="merge" means data is deduplicated on primary key
+        - Multiple loads accumulate data without wiping previous entries
     """
     loader = EarningsCalendarLoader()
 

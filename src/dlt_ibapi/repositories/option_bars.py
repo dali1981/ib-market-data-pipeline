@@ -27,6 +27,10 @@ class OptionBarsReader(ParquetReaderBase):
         """Table name for option bars."""
         return "option_bars_backfill"
 
+    def _get_primary_key_columns(self) -> List[str]:
+        """Primary key for option bars."""
+        return ["underlying", "expiry", "strike", "right", "bar_size", "time"]
+
     def get_present_dates_for_contract(
         self,
         underlying: str,
@@ -124,9 +128,17 @@ class OptionBarsReader(ParquetReaderBase):
                 limit=limit
             )
 
-            # Sort by time (PyArrow doesn't guarantee order)
+            # Deduplicate using primary key
+            # Keep most recent load if duplicates exist
             if not df.empty:
-                df = df.sort_values("time").reset_index(drop=True)
+                pk_cols = ["underlying", "expiry", "strike", "right", "bar_size", "time"]
+                if "_dlt_load_id" in df.columns:
+                    df = df.sort_values(["time", "_dlt_load_id"], ascending=[True, False])
+                    df = df.drop_duplicates(subset=pk_cols, keep="first")
+                else:
+                    df = df.sort_values("time")
+                    df = df.drop_duplicates(subset=pk_cols, keep="first")
+                df = df.reset_index(drop=True)
 
             return df
         else:
@@ -161,11 +173,12 @@ class OptionBarsReader(ParquetReaderBase):
 
             where_sql = " AND ".join(where_clauses)
 
+            # Use DISTINCT ON to deduplicate by primary key
             query = f"""
-                SELECT *
+                SELECT DISTINCT ON (underlying, expiry, strike, "right", bar_size, time) *
                 FROM {table_name}
                 WHERE {where_sql}
-                ORDER BY time
+                ORDER BY underlying, expiry, strike, "right", bar_size, time, _dlt_load_id DESC
             """
 
             if limit:
@@ -212,8 +225,9 @@ class OptionBarsReader(ParquetReaderBase):
 
         where_sql = " AND ".join(where_clauses)
 
+        # Use COUNT(DISTINCT time) to avoid counting duplicates
         query = f"""
-            SELECT DISTINCT
+            SELECT
                 underlying,
                 expiry,
                 strike,
@@ -221,7 +235,7 @@ class OptionBarsReader(ParquetReaderBase):
                 bar_size,
                 MIN(time) as first_bar,
                 MAX(time) as last_bar,
-                COUNT(*) as bar_count
+                COUNT(DISTINCT time) as bar_count
             FROM {table_name}
             WHERE {where_sql}
             GROUP BY underlying, expiry, strike, "right", bar_size

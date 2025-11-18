@@ -37,6 +37,15 @@ class EarningsCalendarReader(ParquetReaderBase):
         """Table name for earnings calendar."""
         return "earnings_calendar"
 
+    def _get_primary_key_columns(self) -> List[str]:
+        """
+        Primary key for earnings calendar.
+
+        Returns [symbol, earnings_date] for standard calendar mode.
+        For snapshot mode, primary key would be [symbol, earnings_date, snapshot_date].
+        """
+        return ["symbol", "earnings_date"]
+
     def get_upcoming_earnings(
         self,
         days_ahead: int = 7,
@@ -98,9 +107,16 @@ class EarningsCalendarReader(ParquetReaderBase):
         if df.empty:
             return df
 
-        # Sort by earnings_date
-        df = df.sort_values("earnings_date").reset_index(drop=True)
+        # Deduplicate using primary key (symbol, earnings_date)
+        pk_cols = ["symbol", "earnings_date"]
+        if "_dlt_load_id" in df.columns:
+            df = df.sort_values(["earnings_date", "_dlt_load_id"], ascending=[True, False])
+            df = df.drop_duplicates(subset=pk_cols, keep="first")
+        else:
+            df = df.sort_values("earnings_date")
+            df = df.drop_duplicates(subset=pk_cols, keep="first")
 
+        df = df.reset_index(drop=True)
         return df
 
     def get_earnings_for_symbol(
@@ -147,7 +163,16 @@ class EarningsCalendarReader(ParquetReaderBase):
         if df.empty:
             return df
 
-        df = df.sort_values("earnings_date").reset_index(drop=True)
+        # Deduplicate using primary key (symbol, earnings_date)
+        pk_cols = ["symbol", "earnings_date"]
+        if "_dlt_load_id" in df.columns:
+            df = df.sort_values(["earnings_date", "_dlt_load_id"], ascending=[True, False])
+            df = df.drop_duplicates(subset=pk_cols, keep="first")
+        else:
+            df = df.sort_values("earnings_date")
+            df = df.drop_duplicates(subset=pk_cols, keep="first")
+
+        df = df.reset_index(drop=True)
         return df
 
     def get_earnings_on_date(
@@ -183,6 +208,18 @@ class EarningsCalendarReader(ParquetReaderBase):
             filter_expr = filter_expr & pc.field("symbol").isin(symbols_upper)
 
         df = self._query_with_pyarrow(filters=filter_expr)
+
+        if df.empty:
+            return df
+
+        # Deduplicate using primary key (symbol, earnings_date)
+        pk_cols = ["symbol", "earnings_date"]
+        if "_dlt_load_id" in df.columns:
+            df = df.sort_values("_dlt_load_id", ascending=False)
+            df = df.drop_duplicates(subset=pk_cols, keep="first")
+        else:
+            df = df.drop_duplicates(subset=pk_cols, keep="first")
+
         return df
 
     def get_available_symbols(self) -> List[str]:
@@ -276,8 +313,9 @@ class EarningsCalendarReader(ParquetReaderBase):
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
+        # Use COUNT(DISTINCT ...) to avoid counting duplicates
         query = f"""
-            SELECT COUNT(*) as count
+            SELECT COUNT(DISTINCT (symbol, earnings_date)) as count
             FROM {self._get_table_name()}
             {where_sql}
         """

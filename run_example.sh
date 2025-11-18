@@ -48,3 +48,16 @@ dlt-ibapi backfill-options --earnings-date 2025-11-17 --k-expirations 2 --k-stri
   #  The rank column lets you easily identify the best candidates even when viewing all results!
 
 
+
+#   Ready to proceed? You can now:
+  #  # 1. Check current duplicates
+  #  dlt-ibapi validate --dataset options
+  #
+  #  # 2. Preview cleanup (dry-run)
+  #  dlt-ibapi deduplicate --dataset options --dry-run
+  #
+  #  # 3. Execute cleanup
+  #  dlt-ibapi deduplicate --dataset options
+
+  dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --top-n 10 --earnings-timing PRE_MARKET
+  dlt-ibapi backfill-batch-calendar-ticks 2025-11-17 --earnings-timing PRE_MARKET
